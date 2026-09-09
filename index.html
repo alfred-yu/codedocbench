@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CodeDocBench</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header id="toolbar">
+      <input
+        id="path-input"
+        type="text"
+        placeholder="输入 C 项目目录绝对路径，例如 C:/myproject"
+        spellcheck="false"
+      />
+      <button id="open-btn" type="button" title="选择项目目录">打开</button>
+      <button id="scan-btn" type="button">扫描</button>
+      <button id="doc-btn" type="button">导出代码文档</button>
+      <span id="status" class="status"></span>
+    </header>
+
+    <main id="layout">
+      <aside id="tree-panel">
+        <div id="tree-container">
+          <p class="placeholder">输入目录并点击“扫描”以加载目录树</p>
+        </div>
+      </aside>
+      <div id="split-home" class="splitter" title="拖拽调整宽度"></div>
+
+      <section id="detail-panel">
+        <div class="detail-empty">
+          <p>在左侧选择 <code>.c</code>/<code>.h</code> 文件以查看解析结果</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- 代码文档生成页：左侧文档目录树、右侧项目文件目录树。暂不含生成逻辑 -->
+    <section id="doc-panel" class="hidden">
+      <div class="doc-header">
+        <button id="doc-back-btn" type="button">← 返回</button>
+        <h2>代码文档生成</h2>
+      </div>
+      <div id="doc-body">
+        <div id="doc-tree-panel">
+          <div class="doc-pane-title">文档目录树</div>
+          <div class="pane-toolbar">
+            <button id="doc-add-btn" type="button" title="未选中节点时新增一级标题，选中章节时新增子章节">＋ 章节</button>
+            <button id="doc-rename-btn" type="button" title="重命名选中节点">✎ 重命名</button>
+            <button id="doc-delete-btn" type="button" title="删除选中节点">－ 删除</button>
+          </div>
+          <div id="doc-tree-container">
+            <p class="placeholder">点击「＋ 章节」添加文档节点</p>
+          </div>
+        </div>
+        <div id="split-doc" class="splitter" title="拖拽调整宽度"></div>
+        <div id="doc-project-panel">
+          <div class="doc-pane-title">项目文件目录树</div>
+          <div class="pane-toolbar">
+            <button id="doc-mount-btn" type="button" title="把右侧勾选的文件挂载到左侧选中的文档节点下">挂载到选中节点</button>
+            <button id="doc-clear-mount-btn" type="button" title="取消右侧勾选">清除勾选</button>
+          </div>
+          <div id="doc-project-tree">
+            <p class="placeholder">请在主页扫描项目目录后再次进入</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

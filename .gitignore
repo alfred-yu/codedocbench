@@ -1,0 +1,23 @@
+# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE / 编辑器
+.idea/
+.vscode/
+.trae/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 日志与临时文件
+*.log
+*.tmp
