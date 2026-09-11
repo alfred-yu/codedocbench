@@ -4,9 +4,21 @@ use std::process::Command;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_dir, parse_file])
+        .invoke_handler(tauri::generate_handler![scan_dir, parse_file, save_file, read_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 将字节数据写入指定路径（用于导出 Excel 等文件）。
+#[tauri::command]
+fn save_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|e| format!("写入文件失败: {e}"))
+}
+
+/// 读取指定文件的字节内容（用于解析低层需求 Excel 等）。
+#[tauri::command]
+fn read_file(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))
 }
 
 /// 扫描目录，返回嵌套目录树 JSON。

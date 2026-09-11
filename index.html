@@ -8,15 +8,17 @@
   </head>
   <body>
     <header id="toolbar">
-      <input
-        id="path-input"
-        type="text"
-        placeholder="输入 C 项目目录绝对路径，例如 C:/myproject"
-        spellcheck="false"
-      />
-      <button id="open-btn" type="button" title="选择项目目录">打开</button>
-      <button id="scan-btn" type="button">扫描</button>
-      <button id="doc-btn" type="button">导出代码文档</button>
+      <div id="homebar">
+        <input
+          id="path-input"
+          type="text"
+          placeholder="输入 C 项目目录绝对路径，例如 C:/myproject"
+          spellcheck="false"
+        />
+        <button id="open-btn" type="button" title="选择项目目录">打开</button>
+        <button id="scan-btn" type="button">扫描</button>
+        <button id="doc-btn" type="button">导出代码文档</button>
+      </div>
       <span id="status" class="status"></span>
     </header>
 
@@ -40,6 +42,10 @@
       <div class="doc-header">
         <button id="doc-back-btn" type="button">← 返回</button>
         <h2>代码文档生成</h2>
+        <div class="doc-actions">
+          <button id="doc-rel-btn" type="button">低层需求关联</button>
+          <button id="doc-export-btn" type="button">导出 Excel</button>
+        </div>
       </div>
       <div id="doc-body">
         <div id="doc-tree-panel">
@@ -63,6 +69,37 @@
           <div id="doc-project-tree">
             <p class="placeholder">请在主页扫描项目目录后再次进入</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 低层需求关联页 -->
+    <section id="rel-panel" class="hidden">
+      <div class="doc-header">
+        <button id="rel-back-btn" type="button">← 返回</button>
+        <h2>低层需求关联</h2>
+        <div class="doc-actions"></div>
+      </div>
+      <div id="rel-body">
+        <div class="rel-config">
+          <div class="rel-file-row">
+            <button id="rel-pick-btn" type="button">选择低层需求 Excel</button>
+            <span id="rel-file-name" class="rel-file-name">未选择文件</span>
+          </div>
+          <div class="rel-cols">
+            <label>ID 列
+              <select id="rel-col-id"><option>请先选择文件</option></select>
+            </label>
+            <label>需求内容列
+              <select id="rel-col-content"><option>请先选择文件</option></select>
+            </label>
+            <label>Object Type 列
+              <select id="rel-col-object"><option>请先选择文件</option></select>
+            </label>
+          </div>
+        </div>
+        <div id="rel-preview" class="rel-preview">
+          <p class="placeholder">选择低层需求 Excel 后在此预览</p>
         </div>
       </div>
     </section>

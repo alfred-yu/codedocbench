@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import * as XLSX from "xlsx";
 
 const pathInput = document.getElementById("path-input");
 const openBtn = document.getElementById("open-btn");
@@ -10,6 +11,7 @@ const detailPanel = document.getElementById("detail-panel");
 const docBtn = document.getElementById("doc-btn");
 const docPanel = document.getElementById("doc-panel");
 const docBackBtn = document.getElementById("doc-back-btn");
+const homebar = document.getElementById("homebar");
 const layout = document.getElementById("layout");
 
 let currentSelection = null; // { type, path }
@@ -22,16 +24,32 @@ let docEditId = null; // 正在就地编辑标题的节点 id
 let mountSelection = new Set(); // 右侧勾选待挂载的项目文件路径
 let docIdCounter = 1;
 
+// 文件可输出的数据类型（右键文件节点选择，每类型占一个章节）
+const DOC_TYPE_OPTIONS = [
+  { key: "functions", label: "函数" },
+  { key: "structs", label: "结构体/联合" },
+  { key: "enums", label: "枚举" },
+  { key: "macros", label: "宏定义" },
+  { key: "typedefs", label: "typedef" },
+  { key: "globals", label: "全局变量" },
+  { key: "includes", label: "Include" },
+];
+
 const docAddBtn = document.getElementById("doc-add-btn");
 const docRenameBtn = document.getElementById("doc-rename-btn");
 const docDeleteBtn = document.getElementById("doc-delete-btn");
 const docMountBtn = document.getElementById("doc-mount-btn");
 const docClearBtn = document.getElementById("doc-clear-mount-btn");
+const docExportBtn = document.getElementById("doc-export-btn");
+const docRelBtn = document.getElementById("doc-rel-btn");
+const relPanel = document.getElementById("rel-panel");
+const relBackBtn = document.getElementById("rel-back-btn");
 
 scanBtn.addEventListener("click", () => doScan());
 openBtn.addEventListener("click", () => chooseDirectory());
 docBtn.addEventListener("click", () => {
   layout.classList.add("hidden");
+  homebar.classList.add("hidden");
   docPanel.classList.remove("hidden");
   renderDocTree();
   renderDocProjectTree();
@@ -39,6 +57,7 @@ docBtn.addEventListener("click", () => {
 docBackBtn.addEventListener("click", () => {
   docPanel.classList.add("hidden");
   layout.classList.remove("hidden");
+  homebar.classList.remove("hidden");
 });
 docAddBtn.addEventListener("click", () => addDocNode());
 docRenameBtn.addEventListener("click", () => renameDocNode());
@@ -48,6 +67,82 @@ docClearBtn.addEventListener("click", () => {
   mountSelection.clear();
   renderDocProjectTree();
 });
+docExportBtn.addEventListener("click", () => exportDocExcel());
+docRelBtn.addEventListener("click", () => {
+  docPanel.classList.add("hidden");
+  relPanel.classList.remove("hidden");
+});
+relBackBtn.addEventListener("click", () => {
+  relPanel.classList.add("hidden");
+  docPanel.classList.remove("hidden");
+});
+
+/* ---- 低层需求 Excel 加载与列选择 ---- */
+const relPickBtn = document.getElementById("rel-pick-btn");
+const relFileName = document.getElementById("rel-file-name");
+const relColId = document.getElementById("rel-col-id");
+const relColContent = document.getElementById("rel-col-content");
+const relColObject = document.getElementById("rel-col-object");
+const relPreview = document.getElementById("rel-preview");
+let relRows = []; // 低层需求数据行
+let relColNames = []; // 表头列名
+
+relPickBtn.addEventListener("click", async () => {
+  const filePath = await open({
+    title: "选择低层需求 Excel",
+    filters: [
+      { name: "Excel 文件", extensions: ["xlsx", "xls"] },
+      { name: "CSV", extensions: ["csv"] },
+    ],
+  });
+  if (!filePath) return;
+  if (typeof filePath === "object") return; // 多选未启用
+  try {
+    const bytes = await invoke("read_file", { path: filePath });
+    const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    relRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    if (!relRows.length || typeof relRows[0] !== "object") {
+      throw new Error("未解析到表头与数据");
+    }
+    relColNames = Object.keys(relRows[0]);
+    relFileName.textContent = filePath.split(/[\\/]/).pop();
+    fillRelColSelects();
+    renderRelPreview();
+  } catch (err) {
+    relRows = [];
+    relColNames = [];
+    relFileName.textContent = "解析失败：" + err;
+  }
+});
+
+function fillRelColSelects() {
+  const opts = relColNames.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+  for (const sel of [relColId, relColContent, relColObject]) {
+    sel.innerHTML = '<option value="">（未指定）</option>' + opts;
+  }
+}
+
+function renderRelPreview() {
+  const rowCount = relRows.length;
+  if (!rowCount) {
+    relPreview.innerHTML = '<p class="placeholder">此文件未解析到有效数据</p>';
+    return;
+  }
+  const head = ["No.", ...relColNames].map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+  const body = relRows
+    .slice(0, 50)
+    .map(
+      (r, i) =>
+        `<tr><td>${i + 1}</td>${relColNames
+          .map((c) => `<td>${escapeHtml(String(r[c]))}</td>`)
+          .join("")}</tr>`
+    )
+    .join("");
+  relPreview.innerHTML = `
+    <div class="rel-preview-info">共 ${rowCount} 行数据 · 预览前 50 行</div>
+    <table class="rel-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
 
 // 点击文档目录树的空白区域 → 取消选中
 const docTreeContainer = document.getElementById("doc-tree-container");
@@ -220,17 +315,17 @@ function buildChapterNode(node, nums) {
   }
   li.appendChild(row);
 
-  // 子节点：章节自动编号，挂载的文件不参与编号
+  // 子节点：章节与挂载文件统一连续编号
   if (node.children.length) {
     const ul = document.createElement("ul");
     ul.className = "tree";
     let childIdx = 0;
     for (const child of node.children) {
+      childIdx += 1;
       if (child.type === "chapter") {
-        childIdx += 1;
         ul.appendChild(buildChapterNode(child, nums.concat(childIdx)));
       } else {
-        ul.appendChild(buildFileNode(child));
+        ul.appendChild(buildFileNode(child, nums.concat(childIdx)));
       }
     }
     li.appendChild(ul);
@@ -238,10 +333,17 @@ function buildChapterNode(node, nums) {
   return li;
 }
 
-function buildFileNode(node) {
+function buildFileNode(node, nums) {
   const li = document.createElement("li");
   const row = document.createElement("div");
   row.className = "node-row doc" + (node.id === docSelection ? " selected" : "");
+
+  if (nums) {
+    const num = document.createElement("span");
+    num.className = "doc-num";
+    num.textContent = nums.join(".") + ".";
+    row.appendChild(num);
+  }
 
   const tag = document.createElement("span");
   tag.className = "file-tag";
@@ -271,6 +373,13 @@ function buildFileNode(node) {
     row.appendChild(name);
     row.appendChild(removeBtn);
     row.addEventListener("dblclick", () => startInlineEdit(node));
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      docSelection = node.id;
+      renderDocTree();
+      showFileTypeMenu(e.clientX, e.clientY, node);
+    });
     row.addEventListener("click", () => {
       docSelection = node.id;
       renderDocTree();
@@ -431,6 +540,121 @@ function mountFiles() {
   renderDocTree();
   renderDocProjectTree();
   alert(added ? `已挂载 ${added} 个文件` : "这些文件已在该节点下");
+}
+
+/* ---- 文件右键菜单：选择输出的数据类型（每类型占一个章节） ---- */
+function showFileTypeMenu(x, y, node) {
+  closeFileTypeMenu();
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.id = "file-type-menu";
+
+  const title = document.createElement("div");
+  title.className = "ctx-title";
+  title.textContent = `输出类型 · ${node.title}`;
+  menu.appendChild(title);
+
+  DOC_TYPE_OPTIONS.forEach((opt) => {
+    const has = node.children.some((c) => c.typeKey === opt.key);
+    const item = document.createElement("div");
+    item.className = "ctx-item" + (has ? " checked" : "");
+    const mark = document.createElement("span");
+    mark.className = "ctx-check";
+    mark.textContent = has ? "☑" : "☐";
+    const label = document.createElement("span");
+    label.textContent = opt.label;
+    item.appendChild(mark);
+    item.appendChild(label);
+    item.addEventListener("click", () => {
+      toggleFileType(node, opt);
+    });
+    menu.appendChild(item);
+  });
+
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
+
+  // 点击菜单外的任意位置关闭（延迟注册，避免本次右键的 click 立即关闭）
+  setTimeout(() => {
+    document.addEventListener("click", closeFileTypeMenu, { once: true });
+  }, 0);
+}
+
+function toggleFileType(node, opt) {
+  const idx = node.children.findIndex((c) => c.typeKey === opt.key);
+  if (idx >= 0) {
+    node.children.splice(idx, 1);
+  } else {
+    node.children.push({
+      id: docIdCounter++,
+      type: "chapter",
+      typeKey: opt.key,
+      title: opt.label,
+      children: [],
+    });
+  }
+  closeFileTypeMenu();
+  renderDocTree();
+}
+
+function closeFileTypeMenu() {
+  const menu = document.getElementById("file-type-menu");
+  if (menu) menu.remove();
+}
+
+/* ---- 导出代码文档 Excel（章节号 / 需求 / Parent ID） ---- */
+function collectDocRows(nodes, nums) {
+  const rows = [];
+  let idx = 0;
+  for (const node of nodes) {
+    idx += 1;
+    const num = nums.concat(idx).join(".");
+    // Parent ID 用于链接低层需求文档中的 ID，暂不处理，留空
+    rows.push({ num, title: node.title, parent: "" });
+    if (node.children.length) {
+      rows.push(...collectDocRows(node.children, nums.concat(idx)));
+    }
+  }
+  return rows;
+}
+
+async function exportDocExcel() {
+  if (!docTree.length) {
+    alert("文档目录树为空，请先添加章节");
+    return;
+  }
+  const rows = collectDocRows(docTree, []);
+  const data = rows.map((r) => ({
+    章节号: r.num,
+    需求: r.title,
+    "Parent ID": r.parent,
+  }));
+  const ws = XLSX.utils.json_to_sheet(data, {
+    header: ["章节号", "需求", "Parent ID"],
+  });
+  ws["!cols"] = [{ wch: 12 }, { wch: 60 }, { wch: 16 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "代码文档");
+  const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const filePath = await save({
+    title: "导出代码文档",
+    defaultPath: "代码文档.xlsx",
+    filters: [{ name: "Excel 文件", extensions: ["xlsx"] }],
+  });
+  if (!filePath) return; // 用户取消
+
+  try {
+    await invoke("save_file", { path: filePath, data: Array.from(bytes) });
+    alert(`已导出：${filePath}`);
+  } catch (err) {
+    alert(`导出失败：${err}`);
+  }
 }
 
 /* ================= 项目文件目录树（右，可勾选挂载） ================= */
