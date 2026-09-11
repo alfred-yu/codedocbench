@@ -14,8 +14,17 @@ const docBackBtn = document.getElementById("doc-back-btn");
 const homebar = document.getElementById("homebar");
 const layout = document.getElementById("layout");
 
+// 启动时恢复上次打开的项目路径
+try {
+  const last = localStorage.getItem("lastProjectRoot");
+  if (last) pathInput.value = last;
+} catch (e) {
+  /* 忽略 */
+}
+
 let currentSelection = null; // { type, path }
 let lastTree = null; // 最近一次扫描的项目目录树
+let projectRoot = null; // 当前项目的根路径（用于按项目持久化文档目录树）
 
 // ---- 文档目录树状态 ----
 let docTree = []; // { id, type:'chapter'|'file', title, path?, children:[] }
@@ -231,6 +240,9 @@ async function doScan() {
     }
     setStatus("");
     lastTree = tree;
+    projectRoot = normProjectPath(dir);
+    localStorage.setItem("lastProjectRoot", projectRoot);
+    loadDocTree();
     renderTree(tree);
   } catch (err) {
     setStatus(`扫描失败: ${err}`, true);
@@ -265,6 +277,49 @@ function renderDocTree() {
     }
   }
   container.appendChild(rootEl);
+  saveDocTree();
+}
+
+/* ---- 文档目录树持久化（按项目根路径，存于 localStorage） ---- */
+function normProjectPath(p) {
+  return String(p).trim().replace(/[\\/]+$/, "");
+}
+
+function docTreeStorageKey() {
+  return "docTree:" + projectRoot;
+}
+
+function loadDocTree() {
+  if (!projectRoot) {
+    docTree = [];
+    docIdCounter = 1;
+    return;
+  }
+  try {
+    const raw = localStorage.getItem(docTreeStorageKey());
+    docTree = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(docTree)) docTree = [];
+  } catch {
+    docTree = [];
+  }
+  let maxId = 0;
+  const walk = (ns) =>
+    ns.forEach((n) => {
+      if (n.id > maxId) maxId = n.id;
+      walk(n.children || []);
+    });
+  walk(docTree);
+  docIdCounter = maxId + 1;
+  renderDocTree();
+}
+
+function saveDocTree() {
+  if (!projectRoot) return;
+  try {
+    localStorage.setItem(docTreeStorageKey(), JSON.stringify(docTree));
+  } catch (e) {
+    /* 存储超限等情况静默忽略 */
+  }
 }
 
 function buildChapterNode(node, nums) {
