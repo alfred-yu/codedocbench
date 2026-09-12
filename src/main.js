@@ -3,6 +3,9 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 // xlsx-js-style：SheetJS 的样式支持分支（API 兼容），用于导出时加粗标题行
 import * as XLSX from "xlsx-js-style";
 
+// 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
+document.title = `CodeDocBench (Powered By 余绍健, v${__APP_VERSION__})`;
+
 const statusEl = document.getElementById("status");
 const treeContainer = document.getElementById("tree-container");
 const detailPanel = document.getElementById("detail-panel");
