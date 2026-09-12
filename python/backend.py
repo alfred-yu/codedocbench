@@ -12,6 +12,9 @@ import os
 import re
 import sys
 
+# 解析器版本号：随解析结果输出，用于追溯"数据由哪个版本的解析规则产生"
+PARSER_VERSION = "1.2.0"
+
 # 可解析的源码后缀
 SOURCE_EXTS = {".c", ".h", ".cpp", ".hpp", ".cc", ".cxx"}
 
@@ -155,16 +158,69 @@ def _strip_comments_line(line: str, in_block: bool):
 
 
 def _tokenize(source: str) -> list:
-    """返回 token 列表，每个元素: [kind, value, line]。"""
+    """返回 token 列表，每个元素: (kind, value, line)。
+
+    词法阶段同时处理两类影响准确性的结构：
+      - 预处理续行：以反斜杠结尾的 #define 等指令拼接为一条逻辑指令，
+        避免续行内容被误当作顶层代码解析出假符号；
+      - 条件编译的确定性剔除：#if 0 分支整体剔除、其 #else/#elif 分支保留；
+        #ifdef/#ifndef 等不可判定条件按"可能生效"处理（各分支均保留）。
+    """
     tokens = []
     in_block = False
-    # 逐行处理：先做跨行安全的注释剔除，再按 token 正则切分
-    for lineno, raw in enumerate(source.split("\n"), start=1):
-        raw, in_block = _strip_comments_line(raw, in_block)
+    # 条件编译栈：[kind, active]，kind 为 "num"（条件可判定）或 "macro"（不可判定）
+    cond_stack = []
+
+    def cond_active():
+        return all(active for _, active in cond_stack)
+
+    raw_lines = source.split("\n")
+    idx = 0
+    n_lines = len(raw_lines)
+    while idx < n_lines:
+        lineno = idx + 1
+        raw = raw_lines[idx]
+        idx += 1
+        stripped, in_block = _strip_comments_line(raw, in_block)
+
+        # 预处理指令：先拼接续行，再整行作为一条 prepro token
+        if stripped.lstrip().startswith("#"):
+            logical = stripped
+            while logical.rstrip().endswith("\\") and idx < n_lines:
+                nxt, in_block = _strip_comments_line(raw_lines[idx], in_block)
+                idx += 1
+                logical = logical.rstrip()[:-1].rstrip() + " " + nxt
+            directive = _cond_directive(logical)
+            if directive is not None:
+                kind, value = directive
+                if kind == "endif":
+                    if cond_stack:
+                        cond_stack.pop()
+                elif kind == "else":
+                    # 仅对可判定的数字条件翻转；#ifdef 的 #else 保持"可能生效"
+                    if cond_stack and cond_stack[-1][0] == "num":
+                        cond_stack[-1][1] = not cond_stack[-1][1]
+                elif kind == "elif":
+                    if cond_stack and cond_stack[-1][0] == "num":
+                        cond_stack[-1][1] = (not cond_stack[-1][1]) and bool(value)
+                elif kind == "if":
+                    cond_stack.append(["num", bool(value)])
+                else:  # ifdef / ifndef
+                    cond_stack.append(["macro", True])
+                # 条件指令本身也产出 prepro token（供 include guard 识别；不影响符号扫描）
+                if cond_active():
+                    tokens.append(("prepro", logical.strip(), lineno))
+                continue
+            if cond_active():
+                tokens.append(("prepro", logical.strip(), lineno))
+            continue
+
+        if not cond_active():
+            continue  # 处于未生效的条件编译分支，整体剔除
         pos = 0
-        n = len(raw)
+        n = len(stripped)
         while pos < n:
-            m = _TOKEN_RE.match(raw, pos)
+            m = _TOKEN_RE.match(stripped, pos)
             if not m:
                 pos += 1
                 continue
@@ -172,13 +228,41 @@ def _tokenize(source: str) -> list:
             pos = m.end()
             if kind in ("comment", "ws"):
                 continue
-            if kind == "pp" and val.startswith("#"):
-                # 整行预处理指令整体作为 prepro token
-                rest = raw[pos:].rstrip()
-                tokens.append(("prepro", val + rest, lineno))
-                break
             tokens.append((kind, val, lineno))
     return tokens
+
+
+def _cond_directive(text: str) -> tuple | None:
+    """识别条件编译指令。
+
+    返回 (kind, value)：
+      ("if", True/False)   #if 0 → False，其余表达式（含未知宏）→ True
+      ("ifdef"/"ifndef", True)  不可判定，按可能生效处理
+      ("elif", True/False) 同 #if 的取值规则
+      ("else", None) / ("endif", None)
+    非条件指令（#include/#define 等）返回 None。
+    """
+    m = re.match(r"#\s*(\w+)(.*)$", text.strip())
+    if not m:
+        return None
+    directive, rest = m.group(1), m.group(2).strip()
+    if directive == "endif":
+        return ("endif", None)
+    if directive == "else":
+        return ("else", None)
+    if directive == "if":
+        return ("if", _cond_expr_value(rest))
+    if directive == "elif":
+        return ("elif", _cond_expr_value(rest))
+    if directive in ("ifdef", "ifndef"):
+        return (directive, True)
+    return None
+
+
+def _cond_expr_value(expr: str) -> bool:
+    """保守求值条件表达式：字面 0/为空 → False，其余（含未知宏表达式）→ True。"""
+    v = expr.strip()
+    return v not in ("", "0")
 
 
 # ---------------------------------------------------------------------------
@@ -195,18 +279,46 @@ def parse_file(path: str) -> dict:
 
     tokens = _tokenize(source)
     result = {
-        "includes": [], "macros": [], "typedefs": [],
-        "functions": [], "structs": [], "enums": [], "globals": [],
+        "includes": [], "macros": [], "constants": [],
+        "typedefs": [], "functions": [], "structs": [], "enums": [], "globals": [],
     }
 
-    # 1) 预处理指令
+    # 1) 预处理指令（识别并过滤头文件包含保护宏）
+    last_cond_name = None  # 上一条条件编译指令的宏名（仅 #ifndef X / #ifdef X / #if !defined(X) 记录）
     for tok in tokens:
         if tok[0] == "prepro":
+            dm = re.match(r"#\s*(\w+)(.*)$", tok[1])
+            if dm:
+                directive, rest = dm.group(1), dm.group(2).strip()
+                if directive in ("ifndef", "ifdef"):
+                    nm = re.match(r"[A-Za-z_]\w*", rest)
+                    last_cond_name = nm.group(0) if nm else None
+                elif directive == "if":
+                    # 形如 #if !defined(FOO_H) 的保护写法同样记录
+                    neg = re.match(r"!\s*defined\s*\(?\s*([A-Za-z_]\w*)", rest)
+                    last_cond_name = neg.group(1) if neg else None
+                elif directive == "define":
+                    nm = re.match(r"([A-Za-z_]\w*)", rest)
+                    if nm and nm.group(1) == last_cond_name:
+                        # 头文件保护宏（#ifndef/#ifdef X 后紧跟的 #define X）：不作为普通宏输出
+                        last_cond_name = None
+                        continue
+                    last_cond_name = None
+                else:
+                    last_cond_name = None
             _parse_prepro(tok[1], tok[2], result)
 
     # 2) 文件作用域符号扫描（跳过预处理，避免重复）
     body = [t for t in tokens if t[0] != "prepro"]
     _scan_top_level(body, result)
+
+    # 3) 元数据：供前端做一致性自检与缓存失效判断
+    result["lineCount"] = source.count("\n") + 1
+    result["parserVersion"] = PARSER_VERSION
+    try:
+        result["mtime"] = int(os.path.getmtime(path) * 1000)
+    except OSError:
+        result["mtime"] = None
     return result
 
 
@@ -222,11 +334,29 @@ def _parse_prepro(text: str, line: int, result: dict) -> None:
     elif directive == "define":
         dm = re.match(r"([A-Za-z_]\w*)(.*)$", rest)
         if dm:
-            result["macros"].append({
-                "name": dm.group(1),
-                "value": dm.group(2).strip() or "(empty)",
-                "line": line,
-            })
+            name = dm.group(1)
+            value = dm.group(2).strip() or "(empty)"
+            entry = {"name": name, "value": value, "line": line}
+            # 常量定义：值为数值/字符串/字符字面量（可带符号或括号）的宏
+            if _is_constant_literal(value):
+                result["constants"].append(entry)
+            else:
+                result["macros"].append(entry)
+
+
+_CONSTANT_RE = re.compile(
+    r"^\s*(\(?\s*[+\-]?\s*"
+    r"(0[xX][0-9a-fA-F]+|[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?[uUlLfF]*)|"
+    r"[+\-]?[0-9]+(?:\.[0-9]+)?"
+    r")\s*\)?$"
+)
+
+
+def _is_constant_literal(value: str) -> bool:
+    v = value.strip()
+    if v.startswith(('"', "'")):
+        return True
+    return bool(_CONSTANT_RE.match(v))
 
 
 # ---------------------------------------------------------------------------
@@ -279,10 +409,16 @@ def _scan_top_level(tokens: list, result: dict) -> None:
                 result["functions"].append(info)
                 i = j
                 continue
+            fp = _consume_fnptr(tokens, i)
+            if fp:
+                info, j = fp
+                result["globals"].append(info)
+                i = j
+                continue
             g = _consume_global(tokens, i)
             if g:
-                info, j = g
-                result["globals"].append(info)
+                infos, j = g
+                result["globals"].extend(infos)
                 i = j
                 continue
         i += 1
@@ -547,45 +683,145 @@ def _prefix_is_type(prefix: list) -> bool:
     return any(t[0] == "ident" for t in prefix)
 
 
+# -- 函数指针全局变量 -----------------------------------------------------------
+def _consume_fnptr(tokens: list, i: int) -> tuple | None:
+    """识别 top-level 函数指针声明：type (*name)(params) [= init];
+
+    形态特征：第一个顶层 '(...)' 内含标识符（指针名），且其闭括号后紧跟 '('。
+    不满足则返回 None，交由函数/全局变量规则处理。
+    """
+    n = len(tokens)
+    # 找到语句结束的分号；出现裸 '{' 则不是声明
+    j = i
+    while j < n and tokens[j][1] != ";":
+        if tokens[j][1] == "{":
+            return None
+        j += 1
+    if j >= n:
+        return None
+    seg = tokens[i:j]
+
+    # 第一个顶层 '(...)'：跟踪深度
+    depth = 0
+    open_idx = close_idx = -1
+    for k, t in enumerate(seg):
+        if t[1] == "(":
+            depth += 1
+            if depth == 1:
+                open_idx = k
+        elif t[1] == ")":
+            depth -= 1
+            if depth == 0:
+                close_idx = k
+                break
+    if open_idx < 0 or close_idx < 0:
+        return None
+    inner = seg[open_idx + 1: close_idx]
+    idents = [t for t in inner if t[0] == "ident"]
+    if not idents:
+        return None
+    # 闭括号后必须紧跟参数列表 '('，否则不是函数指针（如普通括号表达式）
+    if close_idx + 1 >= len(seg) or seg[close_idx + 1][1] != "(":
+        return None
+    name_tok = idents[-1]
+    type_text = _fmt_type(seg[:open_idx]) or "?"
+    return {"name": name_tok[1], "type": type_text, "line": name_tok[2]}, j + 1
+
+
 # -- 全局变量 ------------------------------------------------------------------
 def _consume_global(tokens: list, i: int) -> tuple | None:
-    """识别 top-level 全局变量声明：type name [= init] ; 且不是函数。"""
+    """识别 top-level 全局变量声明，支持多声明符：int a, b, *c = NULL;
+
+    返回 (符号列表, 消耗到的下标)；不像变量声明则返回 None。
+    """
     n = len(tokens)
-    # 起始必须是类型/存储关键字，或以标识符类型开头 + 限定符
     first = tokens[i]
     if not (first[0] == "ident" or first[1] in _TYPE_KEYWORDS):
         return None
-    # 收集到分号，若期间出现 '(' 则可能先是函数，跳过；出现 '{' 跳过
     buf = []
     j = i
-    has_paren = False
+    depth = 0
+    has_init = False  # 出现 '=' 后，允许初始化表达式里的 '(' / '{'
     while j < n:
         v = tokens[j][1]
         if v == ";":
             break
-        if v == "{":
-            return None
-        if v == "(":
-            has_paren = True
-            break
+        if v == "=" and depth == 0:
+            has_init = True
+        elif v == "(" and not has_init:
+            return None  # 括号在赋值前 → 函数/函数指针，交给其他规则
+        elif v == "{" and not has_init and not any(t[1] == "[" for t in buf):
+            return None  # 无初始化上下文的裸 '{' → 函数体/代码块
+        if v in ("(", "[", "{"):
+            depth += 1
+        elif v in (")", "]", "}"):
+            depth -= 1
         buf.append(tokens[j])
         j += 1
-    if not has_paren and buf and j < n and tokens[j][1] == ";":
-        # 提取：最后一个标识符为变量名，其前为类型
-        idents = [t for t in buf if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
+    if not buf or j >= n or tokens[j][1] != ";":
+        return None
+
+    # 按顶层逗号拆分声明符段（忽略初始化列表/函数实参里的逗号）
+    segments = []
+    cur = []
+    seg_depth = 0
+    for t in buf:
+        v = t[1]
+        if v in ("(", "[", "{"):
+            seg_depth += 1
+        elif v in (")", "]", "}"):
+            seg_depth -= 1
+        if v == "," and seg_depth == 0:
+            segments.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    segments.append(cur)
+
+    base_tokens = None
+    globals_out = []
+    for si, seg in enumerate(segments):
+        # 名字只在声明符部分（顶层 '=' 之前）找，避免初始化表达式的标识符冒充变量名
+        eq_idx = -1
+        d = 0
+        for k, t in enumerate(seg):
+            if t[1] in ("(", "[", "{"):
+                d += 1
+            elif t[1] in (")", "]", "}"):
+                d -= 1
+            elif t[1] == "=" and d == 0:
+                eq_idx = k
+                break
+        decl = seg[:eq_idx] if eq_idx >= 0 else seg
+        idents = [t for t in decl if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
         if not idents:
-            return None
+            return None  # 某段没有变量名 → 不是变量声明，整体放弃
         name_tok = idents[-1]
         idx = None
-        for pos, t in enumerate(buf):
+        for pos, t in enumerate(decl):
             if t is name_tok:
                 idx = pos
                 break
-        if idx is None:
-            return None
-        type_text = _fmt_type(buf[:idx])
-        return {"name": name_tok[1], "type": type_text or "?", "line": name_tok[2]}, j + 1
-    return None
+        prefix = decl[:idx]
+        if si == 0:
+            # 基类型：截到声明符自己的 '*' 之前，供后续段复用
+            star_idx = next(
+                (k for k, t in enumerate(prefix) if t[1] == "*"), len(prefix)
+            )
+            base_tokens = prefix[:star_idx]
+            type_text = _fmt_type(prefix) or _fmt_type(base_tokens) or "?"
+        else:
+            # 后续段复用基类型，并附加自己的 '*' 限定符
+            stars = [t for t in prefix if t[1] == "*"]
+            type_text = _fmt_type(base_tokens + stars) or "?"
+        globals_out.append({
+            "name": name_tok[1],
+            "type": type_text,
+            "line": name_tok[2],
+        })
+    if not globals_out:
+        return None
+    return globals_out, j + 1
 
 
 # ---------------------------------------------------------------------------

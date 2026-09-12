@@ -1,25 +1,77 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import * as XLSX from "xlsx";
+// xlsx-js-style：SheetJS 的样式支持分支（API 兼容），用于导出时加粗标题行
+import * as XLSX from "xlsx-js-style";
 
-const pathInput = document.getElementById("path-input");
-const openBtn = document.getElementById("open-btn");
-const scanBtn = document.getElementById("scan-btn");
 const statusEl = document.getElementById("status");
 const treeContainer = document.getElementById("tree-container");
 const detailPanel = document.getElementById("detail-panel");
-const docBtn = document.getElementById("doc-btn");
 const docPanel = document.getElementById("doc-panel");
-const docBackBtn = document.getElementById("doc-back-btn");
-const homebar = document.getElementById("homebar");
 const layout = document.getElementById("layout");
+const treePanel = document.getElementById("tree-panel");
+const projectBar = document.getElementById("project-bar");
+const projectName = document.getElementById("project-name");
 
-// 启动时恢复上次打开的项目路径
+/* ---- SVG 图标（lucide 风格，统一替代 Emoji） ---- */
+const svgIcon = (paths) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+const ICONS = {
+  folder: svgIcon(
+    '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
+  ),
+  fileCode: svgIcon(
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m10 13-2 2 2 2"/><path d="m14 13 2 2-2 2"/>'
+  ),
+  file: svgIcon(
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'
+  ),
+  chevron: svgIcon('<path d="m9 18 6-6-6-6"/>'),
+  empty: svgIcon(
+    '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'
+  ),
+};
+
+const sbProject = document.getElementById("sb-project");
+
+// 启动时恢复上次打开的项目：目录树已持久化，目录仍存在则自动还原
 try {
-  const last = localStorage.getItem("lastProjectRoot");
-  if (last) pathInput.value = last;
+  const savedRoot = localStorage.getItem("lastProjectRoot");
+  const savedTree = localStorage.getItem("lastProjectTree");
+  if (savedRoot && savedTree) {
+    const tree = JSON.parse(savedTree);
+    if (tree && tree.type === "dir") {
+      invoke("file_mtime", { path: savedRoot })
+        .then(() => {
+          lastTree = tree;
+          projectRoot = normProjectPath(savedRoot);
+          if (sbProject) sbProject.textContent = savedRoot;
+          if (projectName) {
+            projectName.textContent = savedRoot.split(/[\\/]/).pop() || savedRoot;
+            projectName.title = savedRoot;
+          }
+          if (projectBar) projectBar.classList.remove("hidden");
+          // 恢复后仅解锁步骤 2，与扫描成功后的递进语义一致
+          maxStep = 2;
+          renderStepper();
+          loadDocTree();
+          renderTree(tree);
+        })
+        .catch(() => {
+          // 目录已不存在，清除持久化记录
+          localStorage.removeItem("lastProjectRoot");
+          localStorage.removeItem("lastProjectTree");
+        });
+    }
+  }
 } catch (e) {
   /* 忽略 */
+}
+
+// 桌面端（Tauri）系统标题栏已含应用图标与名称，隐藏应用内品牌区；
+// 同时禁用 WebView 默认右键菜单——其中的“刷新”会整页重载、丢失运行状态
+if ("__TAURI_INTERNALS__" in window) {
+  document.body.classList.add("in-desktop");
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 let currentSelection = null; // { type, path }
@@ -33,41 +85,161 @@ let docEditId = null; // 正在就地编辑标题的节点 id
 let mountSelection = new Set(); // 右侧勾选待挂载的项目文件路径
 let docIdCounter = 1;
 
-// 文件可输出的数据类型（右键文件节点选择，每类型占一个章节）
-const DOC_TYPE_OPTIONS = [
-  { key: "functions", label: "函数" },
-  { key: "structs", label: "结构体/联合" },
-  { key: "enums", label: "枚举" },
-  { key: "macros", label: "宏定义" },
-  { key: "typedefs", label: "typedef" },
-  { key: "globals", label: "全局变量" },
-  { key: "includes", label: "Include" },
+// 挂载后自动生成的输出子章节：.c 含 Function Definition，.h 不含
+const C_FILE_SECTIONS = [
+  { key: "types", title: "Type Definition" },
+  { key: "globals", title: "Global Variable Definition" },
+  { key: "macros", title: "Macro Definition" },
+  { key: "constants", title: "Constant Definition" },
+  { key: "functions", title: "Function Definition" },
 ];
+const H_FILE_SECTIONS = C_FILE_SECTIONS.filter((s) => s.key !== "functions");
+
+function isSourceFile(node) {
+  return !!node && /\.(c|h)$/i.test(node.path || "");
+}
+
+function sectionsForFile(path) {
+  return /\.h$/i.test(path || "") ? H_FILE_SECTIONS : C_FILE_SECTIONS;
+}
+
+function makeDataSections(path) {
+  return sectionsForFile(path).map((s) => ({
+    id: docIdCounter++,
+    type: "chapter",
+    title: s.title,
+    isData: s.key,
+    children: [],
+  }));
+}
+
+// 解析结果缓存：path -> parse_file 输出
+let parseCache = new Map();
 
 const docAddBtn = document.getElementById("doc-add-btn");
 const docRenameBtn = document.getElementById("doc-rename-btn");
 const docDeleteBtn = document.getElementById("doc-delete-btn");
 const docMountBtn = document.getElementById("doc-mount-btn");
 const docClearBtn = document.getElementById("doc-clear-mount-btn");
-const docExportBtn = document.getElementById("doc-export-btn");
-const docRelBtn = document.getElementById("doc-rel-btn");
+const docExpandBtn = document.getElementById("doc-expand-btn");
+const docCollapseBtn = document.getElementById("doc-collapse-btn");
+const docFilterBar = document.getElementById("doc-filter-bar");
+const docFilterChips = document.getElementById("doc-filter-chips");
+let docFilterExt = ""; // 当前筛选的文件后缀（小写含点），空 = 显示全部
+const genRunBtn = document.getElementById("gen-run-btn");
+const stepperEl = document.getElementById("stepper");
+const genPanel = document.getElementById("gen-panel");
+const genStats = document.getElementById("gen-stats");
+const genPreview = document.getElementById("gen-preview");
 const relPanel = document.getElementById("rel-panel");
-const relBackBtn = document.getElementById("rel-back-btn");
 
-scanBtn.addEventListener("click", () => doScan());
-openBtn.addEventListener("click", () => chooseDirectory());
-docBtn.addEventListener("click", () => {
-  layout.classList.add("hidden");
-  homebar.classList.add("hidden");
-  docPanel.classList.remove("hidden");
-  renderDocTree();
-  renderDocProjectTree();
+/* 仅点击「打开项目目录」引导卡片才打开目录，避免点击左栏其他区域误触 */
+treeContainer.addEventListener("click", (e) => {
+  if (!lastTree && e.target.closest(".open-hint")) openProject();
 });
-docBackBtn.addEventListener("click", () => {
-  docPanel.classList.add("hidden");
-  layout.classList.remove("hidden");
-  homebar.classList.remove("hidden");
+
+/* ---- 项目树右键菜单：刷新项目 / 关闭项目 ---- */
+let ctxMenuEl = null;
+
+function hideCtxMenu() {
+  if (ctxMenuEl) {
+    ctxMenuEl.remove();
+    ctxMenuEl = null;
+  }
+}
+
+function showCtxMenu(x, y, items) {
+  hideCtxMenu();
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  for (const it of items) {
+    const item = document.createElement("div");
+    item.className = "ctx-item";
+    const check = document.createElement("span");
+    check.className = "ctx-check";
+    const label = document.createElement("span");
+    label.textContent = it.label;
+    item.appendChild(check);
+    item.appendChild(label);
+    item.addEventListener("click", () => {
+      hideCtxMenu();
+      it.action();
+    });
+    menu.appendChild(item);
+  }
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 8)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 8)) + "px";
+  ctxMenuEl = menu;
+}
+
+/* 重新扫描当前项目根目录，刷新目录树与解析结果 */
+async function rescanProject() {
+  if (!projectRoot) return;
+  await doScan(projectRoot);
+}
+
+treePanel.addEventListener("contextmenu", (e) => {
+  if (!lastTree) return; // 未打开项目时不弹自定义菜单
+  e.preventDefault();
+  showCtxMenu(e.clientX, e.clientY, [
+    { label: "刷新项目", action: () => rescanProject() },
+    { label: "关闭项目", action: () => closeProject() },
+  ]);
 });
+
+document.addEventListener("click", hideCtxMenu);
+window.addEventListener("blur", hideCtxMenu);
+
+/* ---- 四步向导：① 选择与解析项目 → ② 构建文档目录树 → ③ 关联低层需求 → ④ 生成文档 ---- */
+let currentStep = 1;
+let maxStep = 1; // 已解锁的最远步骤（扫描成功后解锁 2）
+
+function renderStepper() {
+  stepperEl.querySelectorAll(".step-item").forEach((btn) => {
+    const n = Number(btn.dataset.step);
+    // 步骤 3/4 前置条件：文档目录树必须已创建，未创建时按钮置灰并同步状态
+    btn.classList.toggle("active", n === currentStep);
+    btn.classList.toggle("done", n < currentStep);
+    btn.disabled = n > maxStep || (n >= 3 && !docTree.length);
+    const line = btn.previousElementSibling;
+    if (line && line.classList.contains("step-line")) {
+      line.classList.toggle("done", n <= currentStep);
+    }
+  });
+}
+
+function goStep(n) {
+  n = Math.min(4, Math.max(1, n));
+  if (n > maxStep) return; // 未解锁的步骤不可进入
+  if (n >= 3 && !docTree.length) {
+    // 步骤 3/4 的入口条件：文档目录树必须已创建（流程前置校验，而非后续页面报错）
+    alert("请先在步骤 2「构建文档目录树」中添加章节");
+    return;
+  }
+  currentStep = n;
+  // 层层递进：真正到达某一步后，才解锁它的下一步（禁止跳跃）
+  if (n > 1 && n >= maxStep && n < 4) maxStep = n + 1;
+  layout.classList.toggle("hidden", n !== 1);
+  docPanel.classList.toggle("hidden", n !== 2);
+  relPanel.classList.toggle("hidden", n !== 3);
+  genPanel.classList.toggle("hidden", n !== 4);
+  if (n === 2) {
+    renderDocTree();
+    renderDocProjectTree();
+  }
+  if (n === 4) renderGenPreview();
+  renderStepper();
+}
+
+stepperEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".step-item");
+  if (btn && !btn.disabled) goStep(Number(btn.dataset.step));
+});
+
+genRunBtn.addEventListener("click", () => exportDocExcel());
+
 docAddBtn.addEventListener("click", () => addDocNode());
 docRenameBtn.addEventListener("click", () => renameDocNode());
 docDeleteBtn.addEventListener("click", () => deleteDocNode());
@@ -76,19 +248,82 @@ docClearBtn.addEventListener("click", () => {
   mountSelection.clear();
   renderDocProjectTree();
 });
-docExportBtn.addEventListener("click", () => exportDocExcel());
-docRelBtn.addEventListener("click", () => {
-  docPanel.classList.add("hidden");
-  relPanel.classList.remove("hidden");
-});
-relBackBtn.addEventListener("click", () => {
-  relPanel.classList.add("hidden");
-  docPanel.classList.remove("hidden");
-});
+docExpandBtn.addEventListener("click", () => setAllDocCollapsed(false));
+docCollapseBtn.addEventListener("click", () => setAllDocCollapsed(true));
+
+/* 全部展开/折叠：仅影响有子节点的节点，状态随文档树持久化 */
+function setAllDocCollapsed(collapsed) {
+  const walk = (ns) =>
+    ns.forEach((n) => {
+      if (n.children && n.children.length) {
+        n.collapsed = collapsed;
+        walk(n.children);
+      }
+    });
+  walk(docTree);
+  renderDocTree();
+}
+
+/* ---- 生成页：Excel 内容预览（与导出文件同源同构） ---- */
+function countDocNodes(nodes, acc) {
+  for (const n of nodes) {
+    if (n.type === "chapter") acc.chapters += 1;
+    else acc.files += 1;
+    countDocNodes(n.children || [], acc);
+  }
+  return acc;
+}
+
+/* 与 exportDocExcel 完全同源的行数据（章节号/需求内容/Object Type/Parent ID） */
+function buildGenRows(fnIndex) {
+  return collectDocRows(docTree, [], fnIndex);
+}
+
+async function renderGenPreview() {
+  // 先确保数据行取自最新解析结果
+  await refreshAllFileData();
+
+  const acc = countDocNodes(docTree, { chapters: 0, files: 0 });
+  const llr = relRows.length
+    ? `${relFileName.textContent} · ${relRows.length} 行`
+    : "未关联";
+  genStats.innerHTML = [
+    `<span class="gen-stat">章节 <b>${acc.chapters}</b></span>`,
+    `<span class="gen-stat">挂载文件 <b>${acc.files}</b></span>`,
+    `<span class="gen-stat">低层需求 <b>${escapeHtml(llr)}</b></span>`,
+    relRows.length && !relColChapter.value
+      ? '<span class="gen-stat warn">⚠ 未映射「章节列」，函数 Parent ID 关联可能不准</span>'
+      : "",
+  ].join("");
+
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const rows = buildGenRows(fnIndex);
+  if (!rows.length) {
+    genPreview.innerHTML = '<p class="placeholder">文档目录树为空</p>';
+    return;
+  }
+  const head = ["章节号", "需求内容", "Object Type", "Parent ID"]
+    .map((h) => `<th>${h}</th>`)
+    .join("");
+  const colgroup =
+    '<colgroup><col style="width:12%"><col style="width:56%"><col style="width:16%"><col style="width:16%"></colgroup>';
+  const body = rows
+    .map((r) => {
+      const titleCell = `<td class="${r.num !== "" ? "gen-title-cell" : ""}">${escapeHtml(r.title)}</td>`;
+      return `<tr><td class="mono">${escapeHtml(r.num)}</td>${titleCell}<td>${escapeHtml(r.objectType)}</td><td class="mono">${escapeHtml(r.parent).replaceAll("\n", "<br>")}</td></tr>`;
+    })
+    .join("");
+  // 表头与表体分属两个区域：表头固定，表体独立滚动（固定列布局保证对齐）
+  genPreview.innerHTML =
+    `<div class="gen-preview-head"><table class="rel-table gen-table">${colgroup}<thead><tr>${head}</tr></thead></table></div>` +
+    `<div class="gen-preview-scroll"><table class="rel-table gen-table">${colgroup}<tbody>${body}</tbody></table></div>` +
+    `<div class="gen-preview-info">共 ${rows.length} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）</div>`;
+}
 
 /* ---- 低层需求 Excel 加载与列选择 ---- */
 const relPickBtn = document.getElementById("rel-pick-btn");
 const relFileName = document.getElementById("rel-file-name");
+const relColChapter = document.getElementById("rel-col-chapter");
 const relColId = document.getElementById("rel-col-id");
 const relColContent = document.getElementById("rel-col-content");
 const relColObject = document.getElementById("rel-col-object");
@@ -127,7 +362,7 @@ relPickBtn.addEventListener("click", async () => {
 
 function fillRelColSelects() {
   const opts = relColNames.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
-  for (const sel of [relColId, relColContent, relColObject]) {
+  for (const sel of [relColChapter, relColId, relColContent, relColObject]) {
     sel.innerHTML = '<option value="">（未指定）</option>' + opts;
   }
 }
@@ -148,9 +383,15 @@ function renderRelPreview() {
           .join("")}</tr>`
     )
     .join("");
+  // 表头与表体分属两个区域：表头固定，表体独立滚动（固定列布局保证对齐）
+  const colgroup =
+    '<colgroup><col style="width:48px">' +
+    relColNames.map(() => "<col>").join("") +
+    "</colgroup>";
   relPreview.innerHTML = `
     <div class="rel-preview-info">共 ${rowCount} 行数据 · 预览前 50 行</div>
-    <table class="rel-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    <div class="rel-preview-head"><table class="rel-table">${colgroup}<thead><tr>${head}</tr></thead></table></div>
+    <div class="rel-preview-scroll"><table class="rel-table">${colgroup}<tbody>${body}</tbody></table></div>`;
 }
 
 // 点击文档目录树的空白区域 → 取消选中
@@ -166,12 +407,9 @@ docTreeContainer.addEventListener("click", (e) => {
 // 左右分栏宽度拖拽调整
 makeSplitter(document.getElementById("split-home"), document.getElementById("tree-panel"), document.getElementById("layout"));
 makeSplitter(document.getElementById("split-doc"), document.getElementById("doc-tree-panel"), document.getElementById("doc-body"));
-pathInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doScan();
-});
 
-// 弹出原生目录选择对话框，选中后填入路径并自动扫描
-async function chooseDirectory() {
+// 弹出原生目录选择对话框；选择后自动扫描解析
+async function openProject() {
   try {
     const dir = await open({
       directory: true,
@@ -179,11 +417,35 @@ async function chooseDirectory() {
       title: "选择 C 项目目录",
     });
     if (!dir) return; // 用户取消
-    pathInput.value = dir;
-    await doScan();
+    await doScan(dir);
   } catch (err) {
     setStatus(`选择目录失败: ${err}`, true);
   }
+}
+
+// 关闭当前项目：清空扫描结果、解析缓存与文档树，回到初始引导状态
+function closeProject() {
+  lastTree = null;
+  projectRoot = null;
+  currentSelection = null;
+  parseCache.clear();
+  docTree = [];
+  docSelection = null;
+  docEditId = null;
+  mountSelection.clear();
+  try {
+    localStorage.removeItem("lastProjectRoot");
+    localStorage.removeItem("lastProjectTree");
+  } catch (e) {
+    /* 忽略 */
+  }
+  if (sbProject) sbProject.textContent = "";
+  projectBar.classList.add("hidden");
+  setStatus("已关闭项目");
+  renderTreePlaceholder();
+  renderDetailPlaceholder();
+  maxStep = 1;
+  goStep(1);
 }
 
 function setStatus(text, isError = false) {
@@ -222,18 +484,14 @@ function makeSplitter(handle, leftPane, container) {
   handle.addEventListener("pointercancel", end);
 }
 
-async function doScan() {
-  const dir = pathInput.value.trim();
-  if (!dir) {
-    setStatus("请输入目录路径", true);
-    return;
-  }
-  scanBtn.disabled = true;
+async function doScan(dir) {
+  if (!dir) return;
   setStatus("正在扫描…");
   try {
     const tree = await invoke("scan_dir", { path: dir });
     if (tree.type === "error") {
       setStatus(tree.message, true);
+      if (sbProject) sbProject.textContent = "";
       renderTreePlaceholder();
       renderDetailPlaceholder();
       return;
@@ -242,27 +500,48 @@ async function doScan() {
     lastTree = tree;
     projectRoot = normProjectPath(dir);
     localStorage.setItem("lastProjectRoot", projectRoot);
+    // 目录树持久化：意外重载（如开发期刷新）后可自动恢复项目
+    try {
+      localStorage.setItem("lastProjectTree", JSON.stringify(tree));
+    } catch (e) {
+      /* 存储超限等情况静默忽略 */
+    }
+    if (sbProject) sbProject.textContent = dir;
+    if (projectName) {
+      projectName.textContent = dir.split(/[\\/]/).pop() || dir;
+      projectName.title = dir;
+    }
+    if (projectBar) projectBar.classList.remove("hidden");
+    // 解析成功 → 仅解锁步骤 2，后续步骤需逐级到达后解锁
+    maxStep = 2;
+    renderStepper();
     loadDocTree();
     renderTree(tree);
   } catch (err) {
     setStatus(`扫描失败: ${err}`, true);
+    if (sbProject) sbProject.textContent = "";
     renderTreePlaceholder();
-  } finally {
-    scanBtn.disabled = false;
   }
 }
 
 /* ---------------- 目录树 ---------------- */
 function renderTreePlaceholder() {
-  treeContainer.innerHTML = '<p class="placeholder">输入目录并点击“扫描”以加载目录树</p>';
+  treeContainer.innerHTML =
+    '<div id="open-hint" class="open-hint" title="点击选择 C 项目根目录">' +
+    '<span class="brand-logo" aria-hidden="true">' + ICONS.fileCode + "</span>" +
+    '<p class="open-hint-title">打开项目目录</p>' +
+    '<p class="open-hint-sub">点击此处选择 C 项目根目录<br>将自动扫描并解析目录结构</p>' +
+    "</div>";
 }
 
 /* ================= 文档目录树（左） ================= */
 function renderDocTree() {
+  // 目录树增删会实时改变步骤 4 的进入条件，同步刷新导航状态
+  renderStepper();
   const container = document.getElementById("doc-tree-container");
   container.innerHTML = "";
   if (!docTree.length) {
-    container.innerHTML = '<p class="placeholder">点击「＋ 章节」添加文档节点</p>';
+    container.innerHTML = `<p class="placeholder">${ICONS.empty}点击「章节」添加文档节点</p>`;
     return;
   }
   const rootEl = document.createElement("ul");
@@ -311,6 +590,7 @@ function loadDocTree() {
   walk(docTree);
   docIdCounter = maxId + 1;
   renderDocTree();
+  refreshAllFileData();
 }
 
 function saveDocTree() {
@@ -322,10 +602,88 @@ function saveDocTree() {
   }
 }
 
+/* ---- C 文件解析缓存与数据行提取 ----
+   缓存条目带文件 mtime：文件被外部修改后自动重新解析，避免使用陈旧数据 */
+async function ensureParsed(path) {
+  let mtime = null;
+  try {
+    mtime = await invoke("file_mtime", { path });
+  } catch (e) {
+    /* 获取时间失败（如浏览器 dev 环境）则退化为仅会话内缓存 */
+  }
+  const cached = parseCache.get(path);
+  if (cached && cached.mtime !== null && cached.mtime === mtime) {
+    return cached.data;
+  }
+  try {
+    const res = await invoke("parse_file", { path });
+    parseCache.set(path, { mtime: res.mtime ?? mtime, data: res });
+    return res;
+  } catch (e) {
+    const empty = {
+      functions: [], structs: [], enums: [], typedefs: [],
+      globals: [], macros: [], constants: [], mtime,
+    };
+    parseCache.set(path, { mtime, data: empty });
+    return empty;
+  }
+}
+
+function dataSectionNames(res, key) {
+  if (!res || res.type === "error") return [];
+  const byKey = {
+    types: [...(res.typedefs || []), ...(res.structs || []), ...(res.enums || [])],
+    globals: res.globals || [],
+    macros: res.macros || [],
+    constants: res.constants || [],
+    functions: res.functions || [],
+  };
+  return (byKey[key] || [])
+    .map((x) => (x && typeof x === "object" ? x.name : x))
+    .filter(Boolean);
+}
+
+// 为文档树中所有已挂载的源码文件解析数据并刷新显示
+async function refreshAllFileData() {
+  const paths = [];
+  const walk = (ns) =>
+    ns.forEach((n) => {
+      if (isSourceFile(n)) {
+        paths.push(n.path);
+        // 兼容旧数据：数据子章节缺失或与该后缀的期望结构不一致时重建
+        //（.c 应为 5 章，.h 应为 4 章且不含 Function Definition）
+        const expected = sectionsForFile(n.path).map((s) => s.key);
+        const actual = (n.children || []).filter((c) => c.isData).map((c) => c.isData);
+        const matches =
+          actual.length === expected.length &&
+          expected.every((k, i) => actual[i] === k);
+        if (!matches) {
+          n.children = makeDataSections(n.path);
+        }
+      }
+      if (n.children) walk(n.children);
+    });
+  walk(docTree);
+  await Promise.all(paths.map((p) => ensureParsed(p)));
+  renderDocTree();
+}
+
 function buildChapterNode(node, nums) {
   const li = document.createElement("li");
   const row = document.createElement("div");
   row.className = "node-row doc" + (node.id === docSelection ? " selected" : "");
+
+  // 折叠箭头：点击切换展开/折叠（状态存于节点上，随文档树持久化）
+  const twisty = document.createElement("span");
+  twisty.className = "twisty" + (node.collapsed ? "" : " open");
+  twisty.title = node.collapsed ? "展开" : "折叠";
+  twisty.innerHTML = ICONS.chevron;
+  twisty.addEventListener("click", (e) => {
+    e.stopPropagation();
+    node.collapsed = !node.collapsed;
+    renderDocTree();
+  });
+  row.appendChild(twisty);
 
   const num = document.createElement("span");
   num.className = "doc-num";
@@ -370,10 +728,10 @@ function buildChapterNode(node, nums) {
   }
   li.appendChild(row);
 
-  // 子节点：章节与挂载文件统一连续编号
+  // 子节点：章节与挂载文件统一连续编号；折叠时整体隐藏
   if (node.children.length) {
     const ul = document.createElement("ul");
-    ul.className = "tree";
+    ul.className = "tree" + (node.collapsed ? " hidden" : "");
     let childIdx = 0;
     for (const child of node.children) {
       childIdx += 1;
@@ -392,6 +750,21 @@ function buildFileNode(node, nums) {
   const li = document.createElement("li");
   const row = document.createElement("div");
   row.className = "node-row doc" + (node.id === docSelection ? " selected" : "");
+
+  // 挂载的 .c 文件带有 5 个数据子章节，提供折叠箭头；普通文件仅占位对齐
+  const hasChildren = isSourceFile(node) && node.children.length;
+  const twisty = document.createElement("span");
+  twisty.className = "twisty" + (hasChildren && !node.collapsed ? " open" : "");
+  if (hasChildren) {
+    twisty.title = node.collapsed ? "展开" : "折叠";
+    twisty.innerHTML = ICONS.chevron;
+    twisty.addEventListener("click", (e) => {
+      e.stopPropagation();
+      node.collapsed = !node.collapsed;
+      renderDocTree();
+    });
+  }
+  row.appendChild(twisty);
 
   if (nums) {
     const num = document.createElement("span");
@@ -428,19 +801,36 @@ function buildFileNode(node, nums) {
     row.appendChild(name);
     row.appendChild(removeBtn);
     row.addEventListener("dblclick", () => startInlineEdit(node));
-    row.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      docSelection = node.id;
-      renderDocTree();
-      showFileTypeMenu(e.clientX, e.clientY, node);
-    });
     row.addEventListener("click", () => {
       docSelection = node.id;
       renderDocTree();
     });
   }
   li.appendChild(row);
+
+  // .c 文件：渲染自动生成的 5 个数据子章节及其数据行（随文件节点折叠）
+  if (hasChildren) {
+    const ul = document.createElement("ul");
+    ul.className = "tree" + (node.collapsed ? " hidden" : "");
+    let childIdx = 0;
+    for (const child of node.children) {
+      childIdx += 1;
+      const secLi = buildChapterNode(child, (nums || []).concat(childIdx));
+      const dnames = dataSectionNames(parseCache.get(node.path)?.data, child.isData);
+      const items = dnames.length ? dnames : ["N/A"];
+      const dul = document.createElement("ul");
+      dul.className = "tree data" + (child.collapsed ? " hidden" : "");
+      for (const it of items) {
+        const dli = document.createElement("li");
+        dli.className = "data-row" + (dnames.length ? "" : " empty");
+        dli.textContent = it;
+        dul.appendChild(dli);
+      }
+      secLi.appendChild(dul);
+      ul.appendChild(secLi);
+    }
+    li.appendChild(ul);
+  }
   return li;
 }
 
@@ -578,101 +968,175 @@ function mountFiles() {
   const existing = new Set(
     target.children.filter((c) => c.type === "file").map((c) => c.path)
   );
-  let added = 0;
+  const creates = [];
   for (const p of names) {
     if (existing.has(p)) continue;
     const fname = p.split(/[\\/]/).pop();
-    target.children.push({
+    // .c 生成 5 个数据子章节，.h 生成 4 个（不含 Function Definition），其余文件无
+    const children = isSourceFile({ path: p }) ? makeDataSections(p) : [];
+    creates.push({ path: p, node: {
       id: docIdCounter++,
       type: "file",
       title: fname,
       path: p,
-      children: [],
-    });
-    added += 1;
+      children,
+    } });
   }
+  for (const c of creates) target.children.push(c.node);
   mountSelection.clear();
   renderDocTree();
   renderDocProjectTree();
-  alert(added ? `已挂载 ${added} 个文件` : "这些文件已在该节点下");
-}
-
-/* ---- 文件右键菜单：选择输出的数据类型（每类型占一个章节） ---- */
-function showFileTypeMenu(x, y, node) {
-  closeFileTypeMenu();
-  const menu = document.createElement("div");
-  menu.className = "ctx-menu";
-  menu.id = "file-type-menu";
-
-  const title = document.createElement("div");
-  title.className = "ctx-title";
-  title.textContent = `输出类型 · ${node.title}`;
-  menu.appendChild(title);
-
-  DOC_TYPE_OPTIONS.forEach((opt) => {
-    const has = node.children.some((c) => c.typeKey === opt.key);
-    const item = document.createElement("div");
-    item.className = "ctx-item" + (has ? " checked" : "");
-    const mark = document.createElement("span");
-    mark.className = "ctx-check";
-    mark.textContent = has ? "☑" : "☐";
-    const label = document.createElement("span");
-    label.textContent = opt.label;
-    item.appendChild(mark);
-    item.appendChild(label);
-    item.addEventListener("click", () => {
-      toggleFileType(node, opt);
-    });
-    menu.appendChild(item);
-  });
-
-  document.body.appendChild(menu);
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
-
-  // 点击菜单外的任意位置关闭（延迟注册，避免本次右键的 click 立即关闭）
-  setTimeout(() => {
-    document.addEventListener("click", closeFileTypeMenu, { once: true });
-  }, 0);
-}
-
-function toggleFileType(node, opt) {
-  const idx = node.children.findIndex((c) => c.typeKey === opt.key);
-  if (idx >= 0) {
-    node.children.splice(idx, 1);
-  } else {
-    node.children.push({
-      id: docIdCounter++,
-      type: "chapter",
-      typeKey: opt.key,
-      title: opt.label,
-      children: [],
-    });
+  if (creates.length) {
+    // 异步解析数据后刷新数据行
+    Promise.all(creates.filter((c2) => isSourceFile(c2.node)).map((c2) => ensureParsed(c2.path))).then(() => renderDocTree());
   }
-  closeFileTypeMenu();
-  renderDocTree();
+  alert(creates.length ? `已挂载 ${creates.length} 个文件` : "这些文件已在该节点下");
 }
 
-function closeFileTypeMenu() {
-  const menu = document.getElementById("file-type-menu");
-  if (menu) menu.remove();
+/* ---- 导出代码文档 Excel（章节号 / 需求内容 / Object Type / Parent ID） ----
+
+   Parent ID 关联规则（参考 PDT_LLR_Requirements.xlsx）：
+   低层需求文档中"文档编号到函数名为止"——需求内容列的值恰为函数名的行是函数名行，
+   其后直到下一个函数名行之前的所有行是该函数的需求内容行；
+   函数符号行的 Parent ID = 这些需求内容行的 ID 列值集合（逗号分隔），
+   并排除 Object Type 为 Comment 的行；未关联低层需求或匹配不到时为空。 */
+
+/* 收集文档树中全部函数符号名（用于与低层需求文档的需求内容列做整行匹配） */
+function collectFunctionNames() {
+  const names = [];
+  const walk = (ns) =>
+    ns.forEach((n) => {
+      if (n.type === "file" && isSourceFile(n)) {
+        (n.children || []).forEach((sec) => {
+          if (sec.isData === "functions") {
+            names.push(...dataSectionNames(parseCache.get(n.path)?.data, "functions"));
+          }
+        });
+      }
+      walk(n.children || []);
+    });
+  walk(docTree);
+  return names;
 }
 
-/* ---- 导出代码文档 Excel（章节号 / 需求 / Parent ID） ---- */
-function collectDocRows(nodes, nums) {
+/* 建立函数名 → 需求内容行 ID 列表的索引 */
+function buildLlrFunctionIndex(functionNames) {
+  const index = new Map();
+  const contentCol = relColContent.value;
+  const idCol = relColId.value;
+  const typeCol = relColObject.value;
+  const chapterCol = relColChapter.value;
+  if (!contentCol || !idCol || !relRows.length || !functionNames.length) {
+    return index;
+  }
+  const nameSet = new Set(functionNames);
+  let current = null;
+  for (const r of relRows) {
+    const content = String(r[contentCol] ?? "").trim();
+    const chapter = chapterCol ? String(r[chapterCol] ?? "").trim() : "";
+    // 标题行边界：章节列非空（文档编号到符号名为止），或内容恰为已解析的函数名。
+    // 章节标题对应的符号即使不在代码树中，也同样终止上一个函数的需求块。
+    if ((chapterCol && chapter) || nameSet.has(content)) {
+      current = nameSet.has(content) ? [] : null;
+      if (current) index.set(content, current);
+      continue; // 函数名行自身不计入需求内容行
+    }
+    if (!current) continue;
+    const type = typeCol ? String(r[typeCol] ?? "").trim().toLowerCase() : "";
+    if (type === "comment") continue; // 排除 Comment 行
+    const id = String(r[idCol] ?? "").trim();
+    if (id) current.push(id);
+  }
+  return index;
+}
+
+function collectDocRows(nodes, nums, fnIndex) {
   const rows = [];
   let idx = 0;
   for (const node of nodes) {
     idx += 1;
     const num = nums.concat(idx).join(".");
-    // Parent ID 用于链接低层需求文档中的 ID，暂不处理，留空
-    rows.push({ num, title: node.title, parent: "" });
+    // 挂载的源码文件：输出文件行 + 数据子章节行 + 数据行（.c 5 章 / .h 4 章）
+    if (node.type === "file" && isSourceFile(node)) {
+      rows.push({ num, title: node.title, objectType: "", parent: "" });
+      let sIdx = 0;
+      for (const sec of node.children) {
+        sIdx += 1;
+        const snum = `${num}.${sIdx}`;
+        // 数据子章节标题行：标题不参与 Object Type
+        rows.push({ num: snum, title: sec.title, objectType: "", parent: "" });
+        const names = dataSectionNames(parseCache.get(node.path)?.data, sec.isData);
+        const fromSource = names.length > 0;
+        const items = fromSource ? names : ["N/A"];
+        // 数据行：不参与编号；内容来自源码解析 → Source Code，解析不到（N/A 占位）→ Comment
+        for (const it of items) {
+          let rowParent = "";
+          if (sec.isData === "functions" && fromSource && fnIndex) {
+            const ids = fnIndex.get(it);
+            if (ids && ids.length) rowParent = ids.join("\n");
+          }
+          rows.push({
+            num: "",
+            title: it,
+            objectType: fromSource ? "Source Code" : "Comment",
+            parent: rowParent,
+          });
+        }
+      }
+      continue;
+    }
+    // 普通节点行：标题不参与 Object Type；Parent ID 仅供函数行关联低层需求，其余为空
+    rows.push({ num, title: node.title, objectType: "", parent: "" });
     if (node.children.length) {
-      rows.push(...collectDocRows(node.children, nums.concat(idx)));
+      rows.push(...collectDocRows(node.children, nums.concat(idx), fnIndex));
     }
   }
   return rows;
+}
+
+/* ---- 导出前一致性自检：行号越界 / 重复符号 ----
+   利用后端输出的 lineCount 与行号做廉价校验，异常时提示用户而非静默导出 */
+function collectParseWarnings() {
+  const warnings = [];
+  const cats = (res) => [
+    ["函数", res.functions, (it) => (it.isDefinition ? "def" : "decl")],
+    ["全局变量", res.globals, () => ""],
+    ["宏定义", res.macros, () => ""],
+    ["常量", res.constants, () => ""],
+    ["typedef", res.typedefs, () => ""],
+    ["结构体", res.structs, () => ""],
+    ["枚举", res.enums, () => ""],
+  ];
+  const walk = (ns) =>
+    ns.forEach((n) => {
+      if (isSourceFile(n)) {
+        const res = parseCache.get(n.path)?.data;
+        if (res && res.type !== "error") {
+          const lineCount = res.lineCount;
+          for (const [label, items, kindOf] of cats(res)) {
+            const seen = new Map();
+            for (const it of items || []) {
+              if (Number.isFinite(lineCount) && Number.isFinite(it.line) && it.line > lineCount) {
+                warnings.push(
+                  `${n.title}：${label}「${it.name}」行号 ${it.line} 超出文件总行数 ${lineCount}`
+                );
+              }
+              const key = it.name + kindOf(it);
+              if (seen.has(key)) {
+                warnings.push(
+                  `${n.title}：${label}「${it.name}」疑似重复（行 ${seen.get(key)} 与 ${it.line}）`
+                );
+              } else {
+                seen.set(key, it.line);
+              }
+            }
+          }
+        }
+      }
+      walk(n.children || []);
+    });
+  walk(docTree);
+  return warnings;
 }
 
 async function exportDocExcel() {
@@ -680,16 +1144,46 @@ async function exportDocExcel() {
     alert("文档目录树为空，请先添加章节");
     return;
   }
-  const rows = collectDocRows(docTree, []);
+  // 先确保所有挂载的 .c 文件已解析，以保证数据行完整
+  await refreshAllFileData();
+
+  // 一致性自检：发现异常时由用户确认后再导出
+  const warnings = collectParseWarnings();
+  if (relRows.length && !relColChapter.value) {
+    warnings.unshift("低层需求未映射「章节列」，函数 Parent ID 的关联边界可能不准确");
+  }
+  if (warnings.length) {
+    const preview = warnings.slice(0, 5).join("\n");
+    const more = warnings.length > 5 ? `\n……共 ${warnings.length} 处` : "";
+    if (!confirm(`解析自检发现 ${warnings.length} 处异常：\n${preview}${more}\n\n仍要继续导出吗？`)) {
+      return;
+    }
+  }
+
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const rows = collectDocRows(docTree, [], fnIndex);
   const data = rows.map((r) => ({
     章节号: r.num,
-    需求: r.title,
+    需求内容: r.title,
+    "Object Type": r.objectType,
     "Parent ID": r.parent,
   }));
   const ws = XLSX.utils.json_to_sheet(data, {
-    header: ["章节号", "需求", "Parent ID"],
+    header: ["章节号", "需求内容", "Object Type", "Parent ID"],
   });
-  ws["!cols"] = [{ wch: 12 }, { wch: 60 }, { wch: 16 }];
+  ws["!cols"] = [{ wch: 12 }, { wch: 60 }, { wch: 14 }, { wch: 16 }];
+  // 标题行（有章节号的行：章节/文件/数据子章节标题）的需求内容单元格加粗
+  rows.forEach((r, i) => {
+    if (r.num !== "") {
+      const cell = ws[XLSX.utils.encode_cell({ r: i + 1, c: 1 })];
+      if (cell) cell.s = { font: { bold: true } };
+    }
+    // 多个 Parent ID 以换行分隔，开启自动换行以在 Excel 中逐行显示
+    if (String(r.parent).includes("\n")) {
+      const pCell = ws[XLSX.utils.encode_cell({ r: i + 1, c: 3 })];
+      if (pCell) pCell.s = { alignment: { wrapText: true, vertical: "top" } };
+    }
+  });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "代码文档");
   const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
@@ -713,17 +1207,102 @@ async function exportDocExcel() {
 }
 
 /* ================= 项目文件目录树（右，可勾选挂载） ================= */
-function renderDocProjectTree() {
-  const container = document.getElementById("doc-project-tree");
-  container.innerHTML = "";
+
+function fileExt(name) {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i).toLowerCase() : "";
+}
+
+/* 统计项目中各后缀的文件数，用于生成筛选 chip */
+function collectExtCounts() {
+  const counts = new Map();
+  let total = 0;
+  const walk = (n) => {
+    if (n.type === "file") {
+      total += 1;
+      const e = fileExt(n.name);
+      counts.set(e, (counts.get(e) || 0) + 1);
+    } else {
+      (n.children || []).forEach(walk);
+    }
+  };
+  if (lastTree) walk(lastTree);
+  return { counts: [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])), total };
+}
+
+/* 筛选条：全部 / 各后缀 chip（带数量）+ 勾选筛选结果按钮 */
+function renderDocFilterBar() {
   if (!lastTree) {
-    container.innerHTML = '<p class="placeholder">请在主页扫描项目目录后再次进入</p>';
+    docFilterBar.classList.add("hidden");
     return;
   }
-  const rootEl = document.createElement("ul");
-  rootEl.className = "tree root";
-  rootEl.appendChild(buildMountNode(lastTree));
-  container.appendChild(rootEl);
+  docFilterBar.classList.remove("hidden");
+  const { counts, total } = collectExtCounts();
+  docFilterChips.innerHTML = "";
+  const mkChip = (label, ext, count) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "filter-chip" + (docFilterExt === ext ? " active" : "");
+    b.title = ext ? `只显示 ${ext} 文件` : "显示全部文件";
+    b.innerHTML = `${escapeHtml(label)}<span class="count">${count}</span>`;
+    b.addEventListener("click", () => {
+      docFilterExt = docFilterExt === ext ? "" : ext;
+      renderDocProjectTree();
+    });
+    docFilterChips.appendChild(b);
+  };
+  mkChip("全部", "", total);
+  counts.forEach(([ext, count]) => mkChip(ext || "(无后缀)", ext, count));
+}
+
+/* 深拷贝视图：筛选模式下剔除没有任何匹配文件的目录分支 */
+function subtreeHasMatch(node) {
+  if (node.type === "file") {
+    return !docFilterExt || fileExt(node.name) === docFilterExt;
+  }
+  return (node.children || []).some(subtreeHasMatch);
+}
+
+function filteredTreeView(node) {
+  if (!docFilterExt || node.type === "file") return node;
+  return {
+    ...node,
+    children: (node.children || []).filter(subtreeHasMatch).map(filteredTreeView),
+  };
+}
+
+/* 收集某节点下全部子孙文件路径（目录勾选时批量加入/移出勾选集合） */
+function collectFilePaths(node) {
+  const paths = [];
+  const walk = (n) => {
+    if (n.type === "file") {
+      paths.push(n.path);
+    } else {
+      (n.children || []).forEach(walk);
+    }
+  };
+  walk(node);
+  return paths;
+}
+
+/* 按已渲染 DOM 同步各级祖先目录复选框的全选/半选状态（不重建树，保留展开状态） */
+function refreshAncestorChecks(li) {
+  let p = li.parentElement ? li.parentElement.closest("li") : null;
+  while (p) {
+    const dirCb = p.querySelector(":scope > .node-row input[type=checkbox]");
+    if (dirCb) {
+      const boxes = p.querySelectorAll("ul input[type=checkbox]");
+      let total = 0;
+      let selected = 0;
+      boxes.forEach((b) => {
+        total += 1;
+        if (b.checked) selected += 1;
+      });
+      dirCb.checked = total > 0 && selected === total;
+      dirCb.indeterminate = selected > 0 && selected < total;
+    }
+    p = p.parentElement.closest("li");
+  }
 }
 
 function buildMountNode(node) {
@@ -732,15 +1311,32 @@ function buildMountNode(node) {
     const row = document.createElement("div");
     row.className = "node-row dir";
 
+    // 目录复选框：勾选即全选/取消其下所有文件；半选表示部分勾选
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.title = "勾选目录下全部文件";
+    cb.addEventListener("click", (e) => e.stopPropagation()); // 不触发折叠
+    cb.addEventListener("change", () => {
+      collectFilePaths(node).forEach((p) =>
+        cb.checked ? mountSelection.add(p) : mountSelection.delete(p)
+      );
+      li.querySelectorAll("ul input[type=checkbox]").forEach((el) => {
+        el.checked = cb.checked;
+        el.indeterminate = false;
+      });
+      refreshAncestorChecks(li);
+    });
+
     const twisty = document.createElement("span");
     twisty.className = "twisty";
-    twisty.textContent = "▶";
+    twisty.innerHTML = ICONS.chevron;
     const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = "📁";
+    icon.className = "icon dir";
+    icon.innerHTML = ICONS.folder;
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = node.name;
+    row.appendChild(cb);
     row.appendChild(twisty);
     row.appendChild(icon);
     row.appendChild(name);
@@ -751,7 +1347,7 @@ function buildMountNode(node) {
 
     row.addEventListener("click", () => {
       const collapsed = childrenUl.classList.toggle("hidden");
-      twisty.textContent = collapsed ? "▶" : "▼";
+      twisty.classList.toggle("open", !collapsed);
     });
 
     li.appendChild(row);
@@ -765,10 +1361,11 @@ function buildMountNode(node) {
     cb.addEventListener("change", () => {
       if (cb.checked) mountSelection.add(node.path);
       else mountSelection.delete(node.path);
+      refreshAncestorChecks(li);
     });
     const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = "📄";
+    icon.className = "icon file";
+    icon.innerHTML = ICONS.file;
     const name = document.createElement("span");
     name.className = "name";
     name.title = node.path;
@@ -779,6 +1376,20 @@ function buildMountNode(node) {
     li.appendChild(row);
   }
   return li;
+}
+
+function renderDocProjectTree() {
+  const container = document.getElementById("doc-project-tree");
+  container.innerHTML = "";
+  renderDocFilterBar();
+  if (!lastTree) {
+    container.innerHTML = `<p class="placeholder">${ICONS.empty}请在主页扫描项目目录后再次进入</p>`;
+    return;
+  }
+  const rootEl = document.createElement("ul");
+  rootEl.className = "tree root";
+  rootEl.appendChild(buildMountNode(filteredTreeView(lastTree)));
+  container.appendChild(rootEl);
 }
 
 function renderTree(node) {
@@ -798,11 +1409,11 @@ function buildNode(node) {
 
     const twisty = document.createElement("span");
     twisty.className = "twisty";
-    twisty.textContent = "▶";
+    twisty.innerHTML = ICONS.chevron;
 
     const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = "📁";
+    icon.className = "icon dir";
+    icon.innerHTML = ICONS.folder;
 
     const name = document.createElement("span");
     name.className = "name";
@@ -826,7 +1437,7 @@ function buildNode(node) {
 
     row.addEventListener("click", () => {
       const collapsed = childrenUl.classList.toggle("hidden");
-      twisty.textContent = collapsed ? "▶" : "▼";
+      twisty.classList.toggle("open", !collapsed);
     });
 
     li.appendChild(row);
@@ -834,15 +1445,14 @@ function buildNode(node) {
   } else {
     const row = document.createElement("div");
     row.className = "node-row file";
-    if (!node.parsable) row.style.opacity = "0.6";
+    if (!node.parsable) row.style.opacity = "0.55";
 
     const twisty = document.createElement("span");
     twisty.className = "twisty";
-    twisty.textContent = "";
 
     const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = node.parsable ? "📄" : "🗎";
+    icon.className = "icon " + (node.parsable ? "code" : "file");
+    icon.innerHTML = node.parsable ? ICONS.fileCode : ICONS.file;
 
     const name = document.createElement("span");
     name.className = "name";
@@ -869,8 +1479,7 @@ function buildNode(node) {
 
 /* ---------------- 详情区域 ---------------- */
 function renderDetailPlaceholder() {
-  detailPanel.innerHTML =
-    '<div class="detail-empty"><p>在左侧选择 <code>.c</code>/<code>.h</code> 文件以查看解析结果</p></div>';
+  detailPanel.innerHTML = `<div class="detail-empty">${ICONS.empty}<p>在左侧选择 <code>.c</code>/<code>.h</code> 文件以查看解析结果</p></div>`;
 }
 
 async function loadFile(path, name) {
@@ -895,7 +1504,7 @@ function renderDetail(data, name, path) {
   head.className = "detail-head";
   const headIcon = document.createElement("span");
   headIcon.className = "head-icon";
-  headIcon.textContent = "📄";
+  headIcon.innerHTML = ICONS.fileCode;
   const headText = document.createElement("div");
   headText.className = "head-text";
   const hName = document.createElement("h2");

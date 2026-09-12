@@ -7,64 +7,111 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header id="toolbar">
-      <div id="homebar">
-        <input
-          id="path-input"
-          type="text"
-          placeholder="输入 C 项目目录绝对路径，例如 C:/myproject"
-          spellcheck="false"
-        />
-        <button id="open-btn" type="button" title="选择项目目录">打开</button>
-        <button id="scan-btn" type="button">扫描</button>
-        <button id="doc-btn" type="button">导出代码文档</button>
+    <!-- 流程导航条：点击阶段文字切换步骤 -->
+    <nav id="stepper" aria-label="文档生成流程">
+      <div class="stepper-steps">
+        <button class="step-item active" type="button" data-step="1">
+          <span class="step-num">1</span>
+          <span class="step-label">选择与解析项目</span>
+        </button>
+        <span class="step-line"></span>
+        <button class="step-item" type="button" data-step="2" disabled>
+          <span class="step-num">2</span>
+          <span class="step-label">构建文档目录树</span>
+        </button>
+        <span class="step-line"></span>
+        <button class="step-item" type="button" data-step="3" disabled>
+          <span class="step-num">3</span>
+          <span class="step-label">关联低层需求</span>
+        </button>
+        <span class="step-line"></span>
+        <button class="step-item" type="button" data-step="4" disabled>
+          <span class="step-num">4</span>
+          <span class="step-label">生成文档</span>
+        </button>
       </div>
-      <span id="status" class="status"></span>
-    </header>
+    </nav>
 
     <main id="layout">
       <aside id="tree-panel">
+        <div id="project-bar" class="hidden">
+          <span class="icon dir" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          </span>
+          <span id="project-name" class="project-name"></span>
+        </div>
         <div id="tree-container">
-          <p class="placeholder">输入目录并点击“扫描”以加载目录树</p>
+          <div id="open-hint" class="open-hint" title="点击选择 C 项目根目录">
+            <span class="brand-logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6" />
+                <path d="M16 13H8" />
+                <path d="M16 17H8" />
+              </svg>
+            </span>
+            <p class="open-hint-title">打开项目目录</p>
+            <p class="open-hint-sub">点击此处选择 C 项目根目录<br>将自动扫描并解析目录结构</p>
+          </div>
         </div>
       </aside>
       <div id="split-home" class="splitter" title="拖拽调整宽度"></div>
 
       <section id="detail-panel">
         <div class="detail-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
           <p>在左侧选择 <code>.c</code>/<code>.h</code> 文件以查看解析结果</p>
         </div>
       </section>
     </main>
 
-    <!-- 代码文档生成页：左侧文档目录树、右侧项目文件目录树。暂不含生成逻辑 -->
+    <!-- 步骤 2：构建文档目录树（左文档目录树、右项目文件目录树） -->
     <section id="doc-panel" class="hidden">
-      <div class="doc-header">
-        <button id="doc-back-btn" type="button">← 返回</button>
-        <h2>代码文档生成</h2>
-        <div class="doc-actions">
-          <button id="doc-rel-btn" type="button">低层需求关联</button>
-          <button id="doc-export-btn" type="button">导出 Excel</button>
-        </div>
-      </div>
       <div id="doc-body">
         <div id="doc-tree-panel">
           <div class="doc-pane-title">文档目录树</div>
           <div class="pane-toolbar">
-            <button id="doc-add-btn" type="button" title="未选中节点时新增一级标题，选中章节时新增子章节">＋ 章节</button>
-            <button id="doc-rename-btn" type="button" title="重命名选中节点">✎ 重命名</button>
-            <button id="doc-delete-btn" type="button" title="删除选中节点">－ 删除</button>
+            <button id="doc-add-btn" class="btn btn-ghost btn-sm" type="button" title="未选中节点时新增一级标题，选中章节时新增子章节">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              <span>章节</span>
+            </button>
+            <button id="doc-rename-btn" class="btn btn-ghost btn-sm" type="button" title="重命名选中节点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>
+              <span>重命名</span>
+            </button>
+            <button id="doc-delete-btn" class="btn btn-ghost btn-sm btn-danger" type="button" title="删除选中节点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              <span>删除</span>
+            </button>
+            <button id="doc-expand-btn" class="btn btn-ghost btn-sm" type="button" title="展开全部节点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg>
+              <span>展开</span>
+            </button>
+            <button id="doc-collapse-btn" class="btn btn-ghost btn-sm" type="button" title="折叠全部节点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+              <span>折叠</span>
+            </button>
           </div>
           <div id="doc-tree-container">
-            <p class="placeholder">点击「＋ 章节」添加文档节点</p>
+            <p class="placeholder">点击「章节」添加文档节点</p>
           </div>
         </div>
         <div id="split-doc" class="splitter" title="拖拽调整宽度"></div>
         <div id="doc-project-panel">
           <div class="doc-pane-title">项目文件目录树</div>
           <div class="pane-toolbar">
-            <button id="doc-mount-btn" type="button" title="把右侧勾选的文件挂载到左侧选中的文档节点下">挂载到选中节点</button>
-            <button id="doc-clear-mount-btn" type="button" title="取消右侧勾选">清除勾选</button>
+            <button id="doc-mount-btn" class="btn btn-ghost btn-sm" type="button" title="把右侧勾选的文件挂载到左侧选中的文档节点下">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h0"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>
+              <span>挂载到选中节点</span>
+            </button>
+            <button id="doc-clear-mount-btn" class="btn btn-ghost btn-sm" type="button" title="取消右侧勾选">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+              <span>清除勾选</span>
+            </button>
+          </div>
+          <div id="doc-filter-bar" class="doc-filter-bar hidden">
+            <span class="doc-filter-label">类型</span>
+            <div id="doc-filter-chips" class="doc-filter-chips"></div>
           </div>
           <div id="doc-project-tree">
             <p class="placeholder">请在主页扫描项目目录后再次进入</p>
@@ -73,36 +120,69 @@
       </div>
     </section>
 
-    <!-- 低层需求关联页 -->
+    <!-- 步骤 3：关联低层需求 -->
     <section id="rel-panel" class="hidden">
-      <div class="doc-header">
-        <button id="rel-back-btn" type="button">← 返回</button>
-        <h2>低层需求关联</h2>
-        <div class="doc-actions"></div>
-      </div>
       <div id="rel-body">
-        <div class="rel-config">
-          <div class="rel-file-row">
-            <button id="rel-pick-btn" type="button">选择低层需求 Excel</button>
-            <span id="rel-file-name" class="rel-file-name">未选择文件</span>
+        <aside id="rel-config-panel">
+          <div class="doc-pane-title">低层需求配置</div>
+          <div class="rel-form">
+            <div class="rel-form-group">
+              <span class="rel-form-label">需求文件</span>
+              <button id="rel-pick-btn" class="btn btn-primary" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+                <span>选择 Excel 文件</span>
+              </button>
+              <span id="rel-file-name" class="rel-file-name">未选择文件</span>
+            </div>
+            <div class="rel-form-group">
+              <span class="rel-form-label">列映射</span>
+              <label>章节列
+                <select id="rel-col-chapter"><option>请先选择文件</option></select>
+              </label>
+              <label>ID 列
+                <select id="rel-col-id"><option>请先选择文件</option></select>
+              </label>
+              <label>需求内容列
+                <select id="rel-col-content"><option>请先选择文件</option></select>
+              </label>
+              <label>Object Type 列
+                <select id="rel-col-object"><option>请先选择文件</option></select>
+              </label>
+            </div>
           </div>
-          <div class="rel-cols">
-            <label>ID 列
-              <select id="rel-col-id"><option>请先选择文件</option></select>
-            </label>
-            <label>需求内容列
-              <select id="rel-col-content"><option>请先选择文件</option></select>
-            </label>
-            <label>Object Type 列
-              <select id="rel-col-object"><option>请先选择文件</option></select>
-            </label>
+        </aside>
+        <section id="rel-preview-panel">
+          <div class="doc-pane-title">数据预览</div>
+          <div id="rel-preview" class="rel-preview">
+            <p class="placeholder">选择低层需求 Excel 后在此预览</p>
           </div>
-        </div>
-        <div id="rel-preview" class="rel-preview">
-          <p class="placeholder">选择低层需求 Excel 后在此预览</p>
+        </section>
+      </div>
+    </section>
+
+    <!-- 步骤 4：生成文档（Excel 内容预览 + 导出到本地） -->
+    <section id="gen-panel" class="hidden">
+      <div id="gen-body">
+        <div class="gen-card">
+          <div class="gen-toolbar">
+            <div id="gen-stats" class="gen-stats"></div>
+            <button id="gen-run-btn" class="btn btn-primary" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+              <span>生成并导出 Excel</span>
+            </button>
+          </div>
+          <div id="gen-preview" class="gen-preview">
+            <p class="placeholder">文档目录树为空</p>
+          </div>
         </div>
       </div>
     </section>
+
+    <!-- 底部状态栏 -->
+    <footer id="statusbar">
+      <span id="status" class="status"></span>
+      <span id="sb-project" class="sb-project"></span>
+    </footer>
 
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -4,7 +4,9 @@ use std::process::Command;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_dir, parse_file, save_file, read_file])
+        .invoke_handler(tauri::generate_handler![
+        scan_dir, parse_file, save_file, read_file, file_mtime
+    ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -31,6 +33,19 @@ fn scan_dir(path: String) -> serde_json::Value {
 #[tauri::command]
 fn parse_file(path: String) -> serde_json::Value {
     run_backend("parse_file", &path)
+}
+
+/// 返回文件最后修改时间（毫秒时间戳），用于前端解析缓存失效判断。
+#[tauri::command]
+fn file_mtime(path: String) -> Result<u128, String> {
+    std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("获取文件时间失败: {e}"))
+        .and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .map_err(|e| format!("时间转换失败: {e}"))
+        })
 }
 
 /// 以子进程方式调用 Python 后端并解析其 stdout JSON。
