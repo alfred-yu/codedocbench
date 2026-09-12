@@ -990,10 +990,11 @@ function mountFiles() {
   renderDocTree();
   renderDocProjectTree();
   if (creates.length) {
-    // 异步解析数据后刷新数据行
+    // 异步解析数据后刷新数据行，挂载结果直接反映在文档树中，不再弹窗提示
     Promise.all(creates.filter((c2) => isSourceFile(c2.node)).map((c2) => ensureParsed(c2.path))).then(() => renderDocTree());
+  } else {
+    alert("这些文件已在该节点下");
   }
-  alert(creates.length ? `已挂载 ${creates.length} 个文件` : "这些文件已在该节点下");
 }
 
 /* ---- 导出代码文档 Excel（章节号 / 需求内容 / Object Type / Parent ID） ----
