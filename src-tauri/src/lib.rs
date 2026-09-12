@@ -77,11 +77,16 @@ fn run_backend(mode: &str, path: &str) -> serde_json::Value {
 
 #[cfg(target_os = "windows")]
 fn run_python(script: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    use std::os::windows::process::CommandExt;
+    // GUI 进程派生控制台子进程时 Windows 会新建控制台窗口，
+    // CREATE_NO_WINDOW 避免解析期间反复闪过黑色控制台
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     Command::new("python")
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .arg(script)
         .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| format!("无法启动 python: {e}"))
 }
