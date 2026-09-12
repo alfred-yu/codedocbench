@@ -1,0 +1,36 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6fed"/>
+      <stop offset="0.55" stop-color="#2557e8"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#dce7fd"/>
+      <stop offset="1" stop-color="#b9cdfb"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 背景圆角方块（对角渐变，与应用内品牌色一致） -->
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <!-- 顶部微高光 -->
+  <path d="M0 0 H1024 V520 Q512 620 0 520 Z" fill="#ffffff" opacity="0.06"/>
+
+  <!-- 文档主体（右上角折角） -->
+  <path d="M322 172 H592 L742 322 V812 Q742 852 702 852 H322 Q282 852 282 812 V212 Q282 172 322 172 Z" fill="#ffffff"/>
+  <!-- 折角 -->
+  <path d="M592 172 L742 322 H632 Q592 322 592 282 Z" fill="url(#fold)"/>
+
+  <!-- 文本行：两条整行 + 一条半行（与品牌 logo 的 file-text 造型呼应） -->
+  <g stroke="#2f6fed" stroke-width="38" stroke-linecap="round">
+    <line x1="356" y1="440" x2="668" y2="440"/>
+    <line x1="356" y1="556" x2="668" y2="556"/>
+    <line x1="356" y1="672" x2="536" y2="672"/>
+  </g>
+
+  <!-- 代码括号点缀：表明“来自代码” -->
+  <g stroke="#4f46e5" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9">
+    <path d="M452 726 L404 778 L452 830"/>
+    <path d="M572 726 L620 778 L572 830"/>
+  </g>
+</svg>
