@@ -1359,3 +1359,42 @@ body {
   font-family: var(--mono);
   color: var(--text-2);
 }
+
+/* ---------------- 宣传视频自动导览（仅 ?tour=1） ---------------- */
+.promo-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(13, 20, 38, 0.92);
+  opacity: 0;
+  transition: opacity 0.45s ease;
+}
+
+.promo-overlay.show {
+  opacity: 1;
+}
+
+.promo-overlay-title {
+  font-size: 3.2rem;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #ffffff;
+}
+
+.promo-overlay-sub {
+  font-size: 1.05rem;
+  color: #9db4f0;
+  letter-spacing: 2px;
+}
+
+.promo-flash {
+  outline: 3px solid #fbbf24 !important;
+  outline-offset: 2px;
+  border-radius: 6px;
+  transition: outline-color 0.15s;
+}
