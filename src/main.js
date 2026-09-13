@@ -36,35 +36,17 @@ const ICONS = {
 
 const sbProject = document.getElementById("sb-project");
 
-// 启动时恢复上次打开的项目：目录树已持久化，目录仍存在则自动还原
+// 启动时恢复上次打开的项目：仅持久化了项目根路径指针，
+// 目录树重新扫描、文档树从项目下的 .codedocbench.json 读取
 try {
   const savedRoot = localStorage.getItem("lastProjectRoot");
-  const savedTree = localStorage.getItem("lastProjectTree");
-  if (savedRoot && savedTree) {
-    const tree = JSON.parse(savedTree);
-    if (tree && tree.type === "dir") {
-      invoke("file_mtime", { path: savedRoot })
-        .then(() => {
-          lastTree = tree;
-          projectRoot = normProjectPath(savedRoot);
-          if (sbProject) sbProject.textContent = savedRoot;
-          if (projectName) {
-            projectName.textContent = savedRoot.split(/[\\/]/).pop() || savedRoot;
-            projectName.title = savedRoot;
-          }
-          if (projectBar) projectBar.classList.remove("hidden");
-          // 恢复后仅解锁步骤 2，与扫描成功后的递进语义一致
-          maxStep = 2;
-          renderStepper();
-          loadDocTree();
-          renderTree(tree);
-        })
-        .catch(() => {
-          // 目录已不存在，清除持久化记录
-          localStorage.removeItem("lastProjectRoot");
-          localStorage.removeItem("lastProjectTree");
-        });
-    }
+  if (savedRoot) {
+    invoke("file_mtime", { path: savedRoot })
+      .then(() => doScan(savedRoot))
+      .catch(() => {
+        // 目录已不存在，清除持久化记录
+        localStorage.removeItem("lastProjectRoot");
+      });
   }
 } catch (e) {
   /* 忽略 */
@@ -428,6 +410,7 @@ async function openProject() {
 
 // 关闭当前项目：清空扫描结果、解析缓存与文档树，回到初始引导状态
 function closeProject() {
+  flushPendingDocTreeSave();
   lastTree = null;
   projectRoot = null;
   currentSelection = null;
@@ -437,8 +420,9 @@ function closeProject() {
   docEditId = null;
   mountSelection.clear();
   try {
+    // 仅清除"上次项目"指针；文档树在项目目录的 .codedocbench.json 中保留，
+    // 重新打开同一项目时自动恢复
     localStorage.removeItem("lastProjectRoot");
-    localStorage.removeItem("lastProjectTree");
   } catch (e) {
     /* 忽略 */
   }
@@ -489,6 +473,7 @@ function makeSplitter(handle, leftPane, container) {
 
 async function doScan(dir) {
   if (!dir) return;
+  flushPendingDocTreeSave();
   setStatus("正在扫描…");
   try {
     const tree = await invoke("scan_dir", { path: dir });
@@ -503,12 +488,6 @@ async function doScan(dir) {
     lastTree = tree;
     projectRoot = normProjectPath(dir);
     localStorage.setItem("lastProjectRoot", projectRoot);
-    // 目录树持久化：意外重载（如开发期刷新）后可自动恢复项目
-    try {
-      localStorage.setItem("lastProjectTree", JSON.stringify(tree));
-    } catch (e) {
-      /* 存储超限等情况静默忽略 */
-    }
     if (sbProject) sbProject.textContent = dir;
     if (projectName) {
       projectName.textContent = dir.split(/[\\/]/).pop() || dir;
@@ -518,7 +497,7 @@ async function doScan(dir) {
     // 解析成功 → 仅解锁步骤 2，后续步骤需逐级到达后解锁
     maxStep = 2;
     renderStepper();
-    loadDocTree();
+    await loadDocTree();
     renderTree(tree);
   } catch (err) {
     setStatus(`扫描失败: ${err}`, true);
@@ -562,28 +541,64 @@ function renderDocTree() {
   saveDocTree();
 }
 
-/* ---- 文档目录树持久化（按项目根路径，存于 localStorage） ---- */
+/* ---- 文档目录树持久化（存于项目根目录下的 .codedocbench.json） ---- */
 function normProjectPath(p) {
   return String(p).trim().replace(/[\\/]+$/, "");
 }
 
-function docTreeStorageKey() {
-  return "docTree:" + projectRoot;
+const PROJECT_DATA_FILENAME = ".codedocbench.json";
+let pendingDocTreeSave = null; // { root, payload }：防抖期间待写盘的数据
+let docTreeSaveTimer = null;
+let storageWarned = false;
+
+function projectDataFilePath(root) {
+  return root + (root.includes("\\") ? "\\" : "/") + PROJECT_DATA_FILENAME;
 }
 
-function loadDocTree() {
+function buildProjectDataPayload() {
+  return JSON.stringify({ version: 1, savedAt: new Date().toISOString(), docTree });
+}
+
+/* 从项目文件读取文档树；旧版本数据存于 localStorage，桌面端首次打开时自动迁移 */
+async function loadDocTree() {
   if (!projectRoot) {
     docTree = [];
     docIdCounter = 1;
     return;
   }
+  docTree = [];
+  let legacyData = null;
   try {
-    const raw = localStorage.getItem(docTreeStorageKey());
-    docTree = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(docTree)) docTree = [];
+    const bytes = await invoke("read_file", { path: projectDataFilePath(projectRoot) });
+    const parsed = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes)));
+    if (Array.isArray(parsed.docTree)) docTree = parsed.docTree;
   } catch {
-    docTree = [];
+    // 项目文件不存在或不可读：回退读取旧版 localStorage 数据
+    try {
+      const raw = localStorage.getItem("docTree:" + projectRoot);
+      if (raw) {
+        const legacy = JSON.parse(raw);
+        if (Array.isArray(legacy)) legacyData = legacy;
+        else if (legacy && Array.isArray(legacy.docTree)) legacyData = legacy.docTree;
+      }
+    } catch {
+      /* 忽略 */
+    }
   }
+  if (legacyData) {
+    docTree = legacyData;
+    // 桌面端：迁移到项目文件后清除旧键；浏览器演示模式保留
+    if ("__TAURI_INTERNALS__" in window) {
+      try {
+        localStorage.removeItem("docTree:" + projectRoot);
+      } catch (e) {
+        /* 忽略 */
+      }
+      pendingDocTreeSave = { root: projectRoot, payload: buildProjectDataPayload() };
+      writeProjectDocTreeNow();
+    }
+  }
+  if (!Array.isArray(docTree)) docTree = [];
   let maxId = 0;
   const walk = (ns) =>
     ns.forEach((n) => {
@@ -596,14 +611,47 @@ function loadDocTree() {
   refreshAllFileData();
 }
 
+/* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
 function saveDocTree() {
   if (!projectRoot) return;
+  // 浏览器演示模式没有文件系统，退回 localStorage
+  if (!("__TAURI_INTERNALS__" in window)) {
+    try {
+      localStorage.setItem("docTree:" + projectRoot, buildProjectDataPayload());
+    } catch (e) {
+      /* 存储超限等情况静默忽略 */
+    }
+    return;
+  }
+  pendingDocTreeSave = { root: projectRoot, payload: buildProjectDataPayload() };
+  clearTimeout(docTreeSaveTimer);
+  docTreeSaveTimer = setTimeout(writeProjectDocTreeNow, 300);
+}
+
+async function writeProjectDocTreeNow() {
+  clearTimeout(docTreeSaveTimer);
+  const pending = pendingDocTreeSave;
+  pendingDocTreeSave = null;
+  if (!pending) return;
   try {
-    localStorage.setItem(docTreeStorageKey(), JSON.stringify(docTree));
+    const bytes = Array.from(new TextEncoder().encode(pending.payload));
+    await invoke("save_file", { path: projectDataFilePath(pending.root), data: bytes });
   } catch (e) {
-    /* 存储超限等情况静默忽略 */
+    // 项目目录只读等场景：本次会话内文档树仍可用，仅提示一次
+    if (!storageWarned) {
+      storageWarned = true;
+      setStatus("项目目录不可写，文档树仅保存在当前会话中", true);
+    }
+    console.warn("文档树写入项目文件失败:", e);
   }
 }
+
+// 切换/关闭项目前把待写数据落到磁盘，避免数据滞留内存
+function flushPendingDocTreeSave() {
+  if (pendingDocTreeSave) writeProjectDocTreeNow();
+}
+
+window.addEventListener("beforeunload", flushPendingDocTreeSave);
 
 /* ---- C 文件解析缓存与数据行提取 ----
    缓存条目带文件 mtime：文件被外部修改后自动重新解析，避免使用陈旧数据 */
