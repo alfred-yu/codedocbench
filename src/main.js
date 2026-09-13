@@ -267,23 +267,32 @@ function buildGenRows(fnIndex) {
 }
 
 async function renderGenPreview() {
-  // 先确保数据行取自最新解析结果
+  // 先确保数据行取自最新解析结果；低层需求文件被外部修改时自动重读
   await refreshAllFileData();
+  await refreshLlrIfChanged();
 
   const acc = countDocNodes(docTree, { chapters: 0, files: 0 });
   const llr = relRows.length
     ? `${relFileName.textContent} · ${relRows.length} 行`
     : "未关联";
+  const fnNames = [...new Set(collectFunctionNames())];
+  const fnIndex = buildLlrFunctionIndex(fnNames);
+  const fnLinked = fnNames.filter((n) => (fnIndex.get(n) || []).length).length;
   genStats.innerHTML = [
     `<span class="gen-stat">章节 <b>${acc.chapters}</b></span>`,
     `<span class="gen-stat">挂载文件 <b>${acc.files}</b></span>`,
     `<span class="gen-stat">低层需求 <b>${escapeHtml(llr)}</b></span>`,
+    relRows.length && fnNames.length
+      ? `<span class="gen-stat">Parent ID 关联 <b>${fnLinked}/${fnNames.length}</b></span>`
+      : "",
     relRows.length && !relColChapter.value
       ? '<span class="gen-stat warn">⚠ 未映射「章节列」，函数 Parent ID 关联可能不准</span>'
       : "",
+    relRows.length && (!relColContent.value || !relColId.value)
+      ? '<span class="gen-stat warn">⚠ 未映射「需求内容列/ID 列」，无法生成 Parent ID</span>'
+      : "",
   ].join("");
 
-  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
   const rows = buildGenRows(fnIndex);
   if (!rows.length) {
     genPreview.innerHTML = '<p class="placeholder">文档目录树为空</p>';
@@ -318,8 +327,16 @@ const relPreview = document.getElementById("rel-preview");
 let relRows = []; // 低层需求数据行
 let relColNames = []; // 表头列名
 let relFilePath = null; // 当前关联的低层需求文件路径（随项目持久化）
+let relFileMtime = null; // 关联时记录的文件 mtime，用于检测磁盘文件被外部修改
 
 async function loadLlrFile(filePath) {
+  // 先取 mtime 再读内容：若两步之间文件被修改，下次新鲜度检查会再触发重读
+  let mtime = null;
+  try {
+    mtime = await invoke("file_mtime", { path: filePath });
+  } catch (e) {
+    /* 浏览器 dev 环境无文件命令，退化为不检查新鲜度 */
+  }
   const bytes = await invoke("read_file", { path: filePath });
   const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -328,6 +345,7 @@ async function loadLlrFile(filePath) {
     throw new Error("未解析到表头与数据");
   }
   relFilePath = filePath;
+  relFileMtime = mtime;
   relRows = rows;
   relColNames = Object.keys(rows[0]);
   relFileName.textContent = filePath.split(/[\\/]/).pop();
@@ -595,6 +613,7 @@ function buildProjectDataPayload() {
 /* 恢复/重置低层需求关联（文件路径 + 列映射，随项目持久化） */
 function resetLlrState() {
   relFilePath = null;
+  relFileMtime = null;
   relRows = [];
   relColNames = [];
   relFileName.textContent = "未选择文件";
@@ -617,15 +636,63 @@ async function restoreLlr(llr) {
     resetLlrState();
     return;
   }
-  const m = llr.mapping || {};
-  const apply = (sel, v) => {
-    if (v) sel.value = v;
-  };
-  apply(relColChapter, m.chapter);
-  apply(relColId, m.id);
-  apply(relColContent, m.content);
-  apply(relColObject, m.objectType);
+  // 恢复列映射：列名在当前文件表头中不存在时明确提示，避免静默失效
+  const invalid = applyRelMapping(llr.mapping || {});
+  if (invalid.length) {
+    relFileName.textContent += `（注意：列映射已失效：${invalid.join("、")}，请重新映射）`;
+  }
   saveDocTree();
+}
+
+/* 应用列映射：仅当列名仍存在于当前文件表头时生效，返回失效映射的描述列表 */
+function applyRelMapping(m) {
+  const invalid = [];
+  const apply = (sel, key, label) => {
+    const v = m[key];
+    if (!v) return;
+    if ([...sel.options].some((o) => o.value === v)) {
+      sel.value = v;
+    } else {
+      invalid.push(`「${label}」列「${v}」`);
+    }
+  };
+  apply(relColChapter, "chapter", "章节");
+  apply(relColId, "id", "ID");
+  apply(relColContent, "content", "需求内容");
+  apply(relColObject, "objectType", "Object Type");
+  return invalid;
+}
+
+/* 低层需求文件新鲜度：磁盘文件被外部修改后自动重读（尽量保持列映射），
+   避免预览/导出基于陈旧数据计算 Parent ID。返回是否发生了重读 */
+async function refreshLlrIfChanged() {
+  if (!relFilePath || !relRows.length || relFileMtime === null) return false;
+  let mtime = null;
+  try {
+    mtime = await invoke("file_mtime", { path: relFilePath });
+  } catch (e) {
+    return false; // 无法获取 mtime 时不做检查
+  }
+  if (mtime === relFileMtime) return false;
+  const mapping = {
+    chapter: relColChapter.value,
+    id: relColId.value,
+    content: relColContent.value,
+    objectType: relColObject.value,
+  };
+  try {
+    await loadLlrFile(relFilePath);
+  } catch (e) {
+    // 文件暂时不可读（被移动/占用）：保留已加载数据继续，仅提示
+    setStatus(`低层需求文件重读失败，使用已加载数据：${e}`, true);
+    return false;
+  }
+  const invalid = applyRelMapping(mapping);
+  if (invalid.length) {
+    relFileName.textContent += `（注意：原列映射已失效：${invalid.join("、")}，请重新映射）`;
+  }
+  saveDocTree();
+  return true;
 }
 
 /* 从项目文件读取文档树；旧版本数据存于 localStorage，桌面端首次打开时自动迁移 */
@@ -1125,25 +1192,33 @@ function mountFiles() {
    Parent ID 关联规则（参考 PDT_LLR_Requirements.xlsx）：
    低层需求文档中"文档编号到函数名为止"——需求内容列的值恰为函数名的行是函数名行，
    其后直到下一个函数名行之前的所有行是该函数的需求内容行；
-   函数符号行的 Parent ID = 这些需求内容行的 ID 列值集合（逗号分隔），
+   函数符号行的 Parent ID = 这些需求内容行的 ID 列值集合（换行分隔），
    并排除 Object Type 为 Comment 的行；未关联低层需求或匹配不到时为空。 */
 
-/* 收集文档树中全部函数符号名（用于与低层需求文档的需求内容列做整行匹配） */
-function collectFunctionNames() {
-  const names = [];
+/* 收集文档树中全部函数符号名及其所在文件（用于匹配与同名歧义检查） */
+function collectFunctionNameFiles() {
+  const map = new Map(); // 函数名 -> 所在文件标题集合
   const walk = (ns) =>
     ns.forEach((n) => {
       if (n.type === "file" && isSourceFile(n)) {
         (n.children || []).forEach((sec) => {
           if (sec.isData === "functions") {
-            names.push(...dataSectionNames(parseCache.get(n.path)?.data, "functions"));
+            for (const name of dataSectionNames(parseCache.get(n.path)?.data, "functions")) {
+              if (!map.has(name)) map.set(name, new Set());
+              map.get(name).add(n.title);
+            }
           }
         });
       }
       walk(n.children || []);
     });
   walk(docTree);
-  return names;
+  return map;
+}
+
+/* 收集文档树中全部函数符号名（用于与低层需求文档的需求内容列做整行匹配） */
+function collectFunctionNames() {
+  return [...collectFunctionNameFiles().keys()];
 }
 
 /* 建立函数名 → 需求内容行 ID 列表的索引 */
@@ -1175,6 +1250,38 @@ function buildLlrFunctionIndex(functionNames) {
     if (id) current.push(id);
   }
   return index;
+}
+
+/* 扫描低层需求行（与 buildLlrFunctionIndex 相同的边界规则）：
+   统计每个函数的需求块数量，并找出未关联到文档树函数的需求块 */
+function scanLlrBlocks(nameSet) {
+  const contentCol = relColContent.value;
+  const idCol = relColId.value;
+  const typeCol = relColObject.value;
+  const chapterCol = relColChapter.value;
+  const blockCounts = new Map(); // 函数名 -> 需求块数量
+  const uncovered = []; // { title, reqCount }
+  let current = null; // { known, title, reqCount }
+  const closeBlock = () => {
+    if (current && !current.known && current.reqCount > 0) uncovered.push(current);
+  };
+  for (const r of relRows) {
+    const content = String(r[contentCol] ?? "").trim();
+    const chapter = chapterCol ? String(r[chapterCol] ?? "").trim() : "";
+    if ((chapterCol && chapter) || nameSet.has(content)) {
+      closeBlock();
+      const known = nameSet.has(content);
+      if (known) blockCounts.set(content, (blockCounts.get(content) || 0) + 1);
+      current = { known, title: `${chapter} ${content}`.trim(), reqCount: 0 };
+      continue;
+    }
+    if (!current) continue;
+    const type = typeCol ? String(r[typeCol] ?? "").trim().toLowerCase() : "";
+    if (type === "comment") continue;
+    if (String(r[idCol] ?? "").trim()) current.reqCount += 1;
+  }
+  closeBlock();
+  return { blockCounts, uncovered };
 }
 
 function collectDocRows(nodes, nums, fnIndex) {
@@ -1219,6 +1326,59 @@ function collectDocRows(nodes, nums, fnIndex) {
     }
   }
   return rows;
+}
+
+/* Parent ID 关联校验（与导出行数据同源）：
+   ID 存在性、函数覆盖、同名歧义、低层需求侧需求块覆盖，问题汇总为可确认的告警 */
+function collectParentIdWarnings(fnIndex, rows) {
+  if (!relRows.length) return [];
+  const warnings = [];
+  const contentCol = relColContent.value;
+  const idCol = relColId.value;
+
+  // 列映射缺失：Parent ID 必然为空，明确提示而非静默导出
+  if (!contentCol || !idCol) {
+    const missing = [!contentCol && "需求内容列", !idCol && "ID 列"].filter(Boolean).join("、");
+    warnings.push(`低层需求未映射「${missing}」，所有函数的 Parent ID 将为空`);
+    return warnings;
+  }
+  if (!relColChapter.value) {
+    warnings.push("低层需求未映射「章节列」，函数 Parent ID 的关联边界可能不准确");
+  }
+
+  // 1) 行数据中的每个 Parent ID 都必须存在于低层需求 ID 列
+  const idSet = new Set(relRows.map((r) => String(r[idCol] ?? "").trim()).filter(Boolean));
+  for (const r of rows) {
+    if (!r.parent) continue;
+    for (const id of r.parent.split("\n")) {
+      if (!idSet.has(id)) {
+        warnings.push(`函数「${r.title}」的 Parent ID「${id}」未在低层需求 ID 列中找到`);
+      }
+    }
+  }
+
+  // 2)/3) 文档树侧：未关联到任何需求的函数；跨文件同名函数将得到相同的 Parent ID
+  const nameFiles = collectFunctionNameFiles();
+  for (const [name, files] of nameFiles) {
+    if (!(fnIndex.get(name) || []).length) {
+      warnings.push(`函数「${name}」（${[...files].join("、")}）未关联到低层需求，Parent ID 将为空`);
+    }
+    if (files.size > 1) {
+      warnings.push(`函数「${name}」在多个文件中同名（${[...files].join("、")}），这些行将关联到相同的 Parent ID`);
+    }
+  }
+
+  // 4) 低层需求侧：同名函数块后者覆盖前者；未关联到文档树任何函数的需求块
+  const { blockCounts, uncovered } = scanLlrBlocks(new Set(nameFiles.keys()));
+  for (const [name, count] of blockCounts) {
+    if (count > 1) {
+      warnings.push(`低层需求中函数「${name}」出现 ${count} 个需求块，导出采用最后一个块`);
+    }
+  }
+  for (const b of uncovered) {
+    warnings.push(`低层需求「${b.title}」下的 ${b.reqCount} 行需求未关联到文档树中的任何函数`);
+  }
+  return warnings;
 }
 
 /* ---- 导出前一致性自检：行号越界 / 重复符号 ----
@@ -1271,24 +1431,23 @@ async function exportDocExcel() {
     alert("文档目录树为空，请先添加章节");
     return;
   }
-  // 先确保所有挂载的 .c 文件已解析，以保证数据行完整
+  // 先确保所有挂载的 .c 文件已解析、低层需求为最新，再构建导出行数据
   await refreshAllFileData();
+  await refreshLlrIfChanged();
 
-  // 一致性自检：发现异常时由用户确认后再导出
-  const warnings = collectParseWarnings();
-  if (relRows.length && !relColChapter.value) {
-    warnings.unshift("低层需求未映射「章节列」，函数 Parent ID 的关联边界可能不准确");
-  }
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const rows = collectDocRows(docTree, [], fnIndex);
+
+  // 一致性自检：解析异常 + Parent ID 关联校验（与导出行数据同源），异常时由用户确认后再导出
+  const warnings = [...collectParseWarnings(), ...collectParentIdWarnings(fnIndex, rows)];
   if (warnings.length) {
     const preview = warnings.slice(0, 5).join("\n");
     const more = warnings.length > 5 ? `\n……共 ${warnings.length} 处` : "";
-    if (!confirm(`解析自检发现 ${warnings.length} 处异常：\n${preview}${more}\n\n仍要继续导出吗？`)) {
+    if (!confirm(`导出自检发现 ${warnings.length} 处异常：\n${preview}${more}\n\n仍要继续导出吗？`)) {
       return;
     }
   }
 
-  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
-  const rows = collectDocRows(docTree, [], fnIndex);
   const data = rows.map((r) => ({
     章节号: r.num,
     需求内容: r.title,
