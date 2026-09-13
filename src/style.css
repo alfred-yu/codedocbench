@@ -327,14 +327,16 @@ body {
 }
 
 /* ---------------- 生成文档页（步骤 4） ---------------- */
-#gen-panel {
+#gen-panel,
+#link-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-#gen-body {
+#gen-body,
+#link-body {
   flex: 1;
   min-height: 0;
   display: flex;

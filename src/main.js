@@ -117,6 +117,7 @@ const genPanel = document.getElementById("gen-panel");
 const genStats = document.getElementById("gen-stats");
 const genPreview = document.getElementById("gen-preview");
 const relPanel = document.getElementById("rel-panel");
+const linkPanel = document.getElementById("link-panel");
 
 /* 仅点击「打开项目目录」引导卡片才打开目录，避免点击左栏其他区域误触 */
 treeContainer.addEventListener("click", (e) => {
@@ -177,14 +178,14 @@ treePanel.addEventListener("contextmenu", (e) => {
 document.addEventListener("click", hideCtxMenu);
 window.addEventListener("blur", hideCtxMenu);
 
-/* ---- 四步向导：① 选择与解析项目 → ② 构建文档目录树 → ③ 关联低层需求 → ④ 生成文档 ---- */
+/* ---- 五步向导：① 选择与解析项目 → ② 构建文档目录树 → ③ 关联低层需求 → ④ 生成文档 → ⑤ 链接文件生成 ---- */
 let currentStep = 1;
 let maxStep = 1; // 已解锁的最远步骤（扫描成功后解锁 2）
 
 function renderStepper() {
   stepperEl.querySelectorAll(".step-item").forEach((btn) => {
     const n = Number(btn.dataset.step);
-    // 步骤 3/4 前置条件：文档目录树必须已创建，未创建时按钮置灰并同步状态
+    // 步骤 3 及之后的前置条件：文档目录树必须已创建，未创建时按钮置灰并同步状态
     btn.classList.toggle("active", n === currentStep);
     btn.classList.toggle("done", n < currentStep);
     btn.disabled = n > maxStep || (n >= 3 && !docTree.length);
@@ -196,20 +197,21 @@ function renderStepper() {
 }
 
 function goStep(n) {
-  n = Math.min(4, Math.max(1, n));
+  n = Math.min(5, Math.max(1, n));
   if (n > maxStep) return; // 未解锁的步骤不可进入
   if (n >= 3 && !docTree.length) {
-    // 步骤 3/4 的入口条件：文档目录树必须已创建（流程前置校验，而非后续页面报错）
+    // 步骤 3 及之后的入口条件：文档目录树必须已创建（流程前置校验，而非后续页面报错）
     alert("请先在步骤 2「构建文档目录树」中添加章节");
     return;
   }
   currentStep = n;
   // 层层递进：真正到达某一步后，才解锁它的下一步（禁止跳跃）
-  if (n > 1 && n >= maxStep && n < 4) maxStep = n + 1;
+  if (n > 1 && n >= maxStep && n < 5) maxStep = n + 1;
   layout.classList.toggle("hidden", n !== 1);
   docPanel.classList.toggle("hidden", n !== 2);
   relPanel.classList.toggle("hidden", n !== 3);
   genPanel.classList.toggle("hidden", n !== 4);
+  linkPanel.classList.toggle("hidden", n !== 5);
   if (n === 2) {
     renderDocTree();
     renderDocProjectTree();
