@@ -315,6 +315,25 @@ const relColObject = document.getElementById("rel-col-object");
 const relPreview = document.getElementById("rel-preview");
 let relRows = []; // 低层需求数据行
 let relColNames = []; // 表头列名
+let relFilePath = null; // 当前关联的低层需求文件路径（随项目持久化）
+
+async function loadLlrFile(filePath) {
+  const bytes = await invoke("read_file", { path: filePath });
+  const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  if (!rows.length || typeof rows[0] !== "object") {
+    throw new Error("未解析到表头与数据");
+  }
+  relFilePath = filePath;
+  relRows = rows;
+  relColNames = Object.keys(rows[0]);
+  relFileName.textContent = filePath.split(/[\\/]/).pop();
+  fillRelColSelects();
+  renderRelPreview();
+  // 关联的文件与列映射随项目持久化
+  saveDocTree();
+}
 
 relPickBtn.addEventListener("click", async () => {
   const filePath = await open({
@@ -327,18 +346,9 @@ relPickBtn.addEventListener("click", async () => {
   if (!filePath) return;
   if (typeof filePath === "object") return; // 多选未启用
   try {
-    const bytes = await invoke("read_file", { path: filePath });
-    const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    relRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-    if (!relRows.length || typeof relRows[0] !== "object") {
-      throw new Error("未解析到表头与数据");
-    }
-    relColNames = Object.keys(relRows[0]);
-    relFileName.textContent = filePath.split(/[\\/]/).pop();
-    fillRelColSelects();
-    renderRelPreview();
+    await loadLlrFile(filePath);
   } catch (err) {
+    relFilePath = null;
     relRows = [];
     relColNames = [];
     relFileName.textContent = "解析失败：" + err;
@@ -350,6 +360,11 @@ function fillRelColSelects() {
   for (const sel of [relColChapter, relColId, relColContent, relColObject]) {
     sel.innerHTML = '<option value="">（未指定）</option>' + opts;
   }
+}
+
+// 列映射变更 → 随项目持久化
+for (const sel of [relColChapter, relColId, relColContent, relColObject]) {
+  sel.addEventListener("change", () => saveDocTree());
 }
 
 function renderRelPreview() {
@@ -419,6 +434,7 @@ function closeProject() {
   docSelection = null;
   docEditId = null;
   mountSelection.clear();
+  resetLlrState();
   try {
     // 仅清除"上次项目"指针；文档树在项目目录的 .codedocbench.json 中保留，
     // 重新打开同一项目时自动恢复
@@ -556,7 +572,58 @@ function projectDataFilePath(root) {
 }
 
 function buildProjectDataPayload() {
-  return JSON.stringify({ version: 1, savedAt: new Date().toISOString(), docTree });
+  return JSON.stringify({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    docTree,
+    llr: relFilePath
+      ? {
+          path: relFilePath,
+          mapping: {
+            chapter: relColChapter.value,
+            id: relColId.value,
+            content: relColContent.value,
+            objectType: relColObject.value,
+          },
+        }
+      : null,
+  });
+}
+
+/* 恢复/重置低层需求关联（文件路径 + 列映射，随项目持久化） */
+function resetLlrState() {
+  relFilePath = null;
+  relRows = [];
+  relColNames = [];
+  relFileName.textContent = "未选择文件";
+  for (const sel of [relColChapter, relColId, relColContent, relColObject]) {
+    sel.innerHTML = "<option>请先选择文件</option>";
+  }
+  relPreview.innerHTML = '<p class="placeholder">选择低层需求 Excel 后在此预览</p>';
+}
+
+async function restoreLlr(llr) {
+  if (!llr || !llr.path) {
+    resetLlrState();
+    return;
+  }
+  try {
+    await loadLlrFile(llr.path);
+  } catch (e) {
+    // 低层需求文件被移动/删除时不阻断项目恢复，回退到未选择状态
+    console.warn("恢复低层需求关联失败:", e);
+    resetLlrState();
+    return;
+  }
+  const m = llr.mapping || {};
+  const apply = (sel, v) => {
+    if (v) sel.value = v;
+  };
+  apply(relColChapter, m.chapter);
+  apply(relColId, m.id);
+  apply(relColContent, m.content);
+  apply(relColObject, m.objectType);
+  saveDocTree();
 }
 
 /* 从项目文件读取文档树；旧版本数据存于 localStorage，桌面端首次打开时自动迁移 */
@@ -567,11 +634,13 @@ async function loadDocTree() {
     return;
   }
   docTree = [];
+  let savedLlr = null;
   let legacyData = null;
   try {
     const bytes = await invoke("read_file", { path: projectDataFilePath(projectRoot) });
     const parsed = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes)));
     if (Array.isArray(parsed.docTree)) docTree = parsed.docTree;
+    savedLlr = parsed.llr || null;
   } catch {
     // 项目文件不存在或不可读：回退读取旧版 localStorage 数据
     try {
@@ -579,7 +648,10 @@ async function loadDocTree() {
       if (raw) {
         const legacy = JSON.parse(raw);
         if (Array.isArray(legacy)) legacyData = legacy;
-        else if (legacy && Array.isArray(legacy.docTree)) legacyData = legacy.docTree;
+        else if (legacy && Array.isArray(legacy.docTree)) {
+          legacyData = legacy.docTree;
+          savedLlr = legacy.llr || null;
+        }
       }
     } catch {
       /* 忽略 */
@@ -609,6 +681,7 @@ async function loadDocTree() {
   docIdCounter = maxId + 1;
   renderDocTree();
   refreshAllFileData();
+  restoreLlr(savedLlr);
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
