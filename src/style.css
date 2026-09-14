@@ -191,6 +191,20 @@ body {
   color: #a52a1e;
 }
 
+.btn:disabled {
+  cursor: not-allowed;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.55;
+}
+
+.btn-secondary:disabled:hover {
+  background: var(--panel);
+  border-color: var(--border-strong);
+  color: var(--text-2);
+}
+
 #scan-btn:disabled {
   cursor: not-allowed;
 }

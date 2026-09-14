@@ -217,7 +217,7 @@ function goStep(n) {
     renderDocProjectTree();
   }
   if (n === 4) renderGenPreview();
-  if (n === 5) renderLinkPreview();
+  if (n === 5) paintLinkTable();
   renderStepper();
 }
 
@@ -758,6 +758,7 @@ async function loadDocTree() {
   refreshAllFileData();
   restoreLlr(savedLlr);
   restoreLink(savedLink);
+  resetLinkGeneration();
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
@@ -1572,6 +1573,13 @@ function linkColgroup() {
 
 /* 仅按当前输入与已构建数据重绘（输入元信息时无需重新解析源码） */
 function paintLinkTable() {
+  if (!linkGenerated) {
+    // 未生成：只提示下一步操作，不渲染任何链接数据（生成必须由按钮显式触发）
+    linkStats.innerHTML = "";
+    linkPreviewEl.innerHTML =
+      '<p class="placeholder">填写链入/链出信息后，点击「生成链接文件」</p>';
+    return;
+  }
   const cfg = linkCfg();
   linkStats.innerHTML = [
     `<span class="gen-stat">链出记录（Source Code 行）<b>${linkSourceCount}</b></span>`,
@@ -1619,8 +1627,29 @@ function paintLinkTable() {
   });
 }
 
-async function renderLinkPreview() {
-  // 数据行取自最新解析结果；低层需求被外部修改时自动重读
+/* 生成链接文件：唯一入口是「生成链接文件」按钮
+   - 前置校验：文档目录树非空，且链入/链出 6 项均已填写
+   - 数据行取自最新解析结果；低层需求被外部修改时自动重读 */
+async function generateLink() {
+  if (!docTree.length) {
+    alert("文档目录树为空，请先构建文档目录树");
+    return;
+  }
+  const cfg = linkCfg();
+  const missing = [
+    ["链入-项目名称", cfg.inProject],
+    ["链入-模块名称", cfg.inModule],
+    ["链入-模块路径", cfg.inPath],
+    ["链出-项目名称", cfg.outProject],
+    ["链出-模块名称", cfg.outModule],
+    ["链出-模块路径", cfg.outPath],
+  ]
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+  if (missing.length) {
+    alert("请先填写完整的链入/链出信息：\n" + missing.join("、"));
+    return;
+  }
   await refreshAllFileData();
   await refreshLlrIfChanged();
   const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
@@ -1628,6 +1657,20 @@ async function renderLinkPreview() {
   linkRows = built.rows;
   linkSourceCount = built.sourceCount;
   linkLinkedCount = built.linkedCount;
+  linkGenerated = true;
+  linkRunBtn.disabled = false;
+  linkRunBtn.removeAttribute("title");
+  paintLinkTable();
+}
+
+/* 打开/切换项目后回到「未生成」状态，需重新点击按钮生成 */
+function resetLinkGeneration() {
+  linkRows = [];
+  linkSourceCount = 0;
+  linkLinkedCount = 0;
+  linkGenerated = false;
+  linkRunBtn.disabled = true;
+  linkRunBtn.title = "请先点击「生成链接文件」";
   paintLinkTable();
 }
 
@@ -1705,7 +1748,8 @@ async function exportLinkExcel() {
   }
 }
 
-// 输入变更：随项目持久化，并即时刷新预览中的元信息列（无需重新解析源码）
+// 输入变更：随项目持久化；已生成时同步刷新预览中的元信息列（无需重新解析源码）
+// 链接行只依赖文档目录树，与元信息无关，故改元信息不会让已生成的结果失效
 for (const el of [
   linkInProject, linkInModule, linkInPath,
   linkOutProject, linkOutModule, linkOutPath,
@@ -1715,6 +1759,7 @@ for (const el of [
     if (currentStep === 5) paintLinkTable();
   });
 }
+linkGenBtn.addEventListener("click", () => generateLink());
 linkRunBtn.addEventListener("click", () => exportLinkExcel());
 
 /* ================= 项目文件目录树（右，可勾选挂载） ================= */
