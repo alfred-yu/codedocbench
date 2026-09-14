@@ -67,7 +67,7 @@
 
     // 浏览一个文件的解析详情
     const fileNames = [...document.querySelectorAll("#tree-container .node-row.file .name")];
-    const target = fileNames.find((n) => n.textContent.includes("DB_PDT_PWR_Init.c")) || fileNames[0];
+    const target = fileNames.find((n) => n.textContent.includes("Demo_PWR_Init.c")) || fileNames[0];
     if (target) {
       flash(target);
       target.click();

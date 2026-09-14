@@ -149,23 +149,23 @@ const FUNCS = Array.from({ length: FUNC_COUNT }, (_, i) => ({
   name: "fn_" + String(i + 1).padStart(3, "0"),
 }));
 
-/* 低层需求（LLR）真实形态：ID 列带前缀 `PDTMGR_LL_R_<n>`。
+/* 低层需求（LLR）真实形态：ID 列带前缀 `DEMO_LL_R_<n>`。
    每个函数一个需求块（函数名行 + 一条 Requirement 行），
    用于端到端验证「链入 ID 只保留尾部数值部分」。 */
-const LLR_PATH = path.join(ROOT, "PDT_LLR_Requirements.xlsx");
+const LLR_PATH = path.join(ROOT, "Demo_LLR_Requirements.xlsx");
 const LLR_HEADER = ["Requirement ID", "Section", "Title / Requirement Text", "Type"];
 const LLR_AOA = [LLR_HEADER];
 for (let i = 1; i <= FUNC_COUNT; i++) {
   const name = FUNCS[i - 1].name;
   LLR_AOA.push(["", `4.2.4.1.${i}`, name, ""]); // 章节/函数名边界行
-  LLR_AOA.push([`PDTMGR_LL_R_${i}`, "", `The ${name} function shall do its job.`, "Requirement"]);
+  LLR_AOA.push([`DEMO_LL_R_${i}`, "", `The ${name} function shall do its job.`, "Requirement"]);
 }
 /* 末尾额外追加一个「不属于任何已挂载函数」的需求块，块内放 55 条 Requirement：
    这些 ID 不会出现在任何 Parent ID 中 → 视角二应逐条列出 55 条孤儿。
    条数刻意 >50：这样才能锁住「孤儿清单全量列出、不截断」（上限 50 的老实现会在这条上翻车）。
    函数名刻意不叫 fn_xxx，避免被文档树里的函数名匹配到而算作已关联。 */
 const ORPHAN_COUNT = 55;
-const ORPHAN_ID = (i) => `PDTMGR_LL_R_9${String(i).padStart(3, "0")}`;
+const ORPHAN_ID = (i) => `DEMO_LL_R_9${String(i).padStart(3, "0")}`;
 const ORPHAN_TEXT = "The fn_not_mounted function shall be traced nowhere.";
 LLR_AOA.push(["", "4.2.4.1.999", "fn_not_mounted", ""]);
 for (let i = 1; i <= ORPHAN_COUNT; i++) {
@@ -393,17 +393,17 @@ if (JSON.stringify(rowsPerFile) !== JSON.stringify([50, 50, 20]))
 if (outIds.length !== 120) fail.push(`三片合计应为 120 行，实际 ${outIds.length} 行`);
 if (new Set(outIds).size !== outIds.length) fail.push("链出 ID 跨片出现重复");
 if (!outIds.every((v, i) => i === 0 || v > outIds[i - 1])) fail.push("链出 ID 未保持递增（可能被重编）");
-// 链入 ID：源数据带前缀 PDTMGR_LL_R_<n>，导出必须只剩数值部分
+// 链入 ID：源数据带前缀 DEMO_LL_R_<n>，导出必须只剩数值部分
 console.log("  链入 ID 前 3 个:", JSON.stringify(inIds.slice(0, 3)), "末 1 个:", JSON.stringify(inIds.slice(-1)));
 if (inIds.some((v) => v == null || v === "")) fail.push("存在空的链入 ID（低层需求未关联）");
-if (inIds.some((v) => String(v).includes("PDTMGR"))) fail.push("链入 ID 仍带前缀：" + JSON.stringify(inIds.filter((v) => String(v).includes("PDTMGR")).slice(0, 3)));
+if (inIds.some((v) => String(v).includes("DEMO_LL_R_"))) fail.push("链入 ID 仍带前缀：" + JSON.stringify(inIds.filter((v) => String(v).includes("DEMO_LL_R_")).slice(0, 3)));
 {
   const expect = Array.from({ length: 120 }, (_, i) => String(i + 1));
   if (JSON.stringify(inIds.map(String)) !== JSON.stringify(expect))
     fail.push("链入 ID 去前缀后应为 1..120，实际前 3 个 " + JSON.stringify(inIds.slice(0, 3)));
 }
 // 预览也必须同步去前缀（预览与导出同口径）
-if (previewHtml.includes("PDTMGR_LL_R_")) fail.push("预览中的链入 ID 仍带前缀（预览与导出口径不一致）");
+if (previewHtml.includes("DEMO_LL_R_")) fail.push("预览中的链入 ID 仍带前缀（预览与导出口径不一致）");
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 

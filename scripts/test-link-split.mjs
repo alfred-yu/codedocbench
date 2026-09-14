@@ -172,8 +172,8 @@ parts137.forEach((p, i) => {
 check("三片合并后链出 ID = 1..137", outIds, Array.from({ length: 137 }, (_, i) => i + 1));
 
 console.log("[7] 链入 ID 去前缀：按 _ 切分取最后一段（前缀形态不固定）");
-check("PDTMGR_LL_R_1 → 1", stripIdPrefix("PDTMGR_LL_R_1"), "1");
-check("PDTMGR_LL_R_406 → 406", stripIdPrefix("PDTMGR_LL_R_406"), "406");
+check("DEMO_LL_R_1 → 1", stripIdPrefix("DEMO_LL_R_1"), "1");
+check("DEMO_LL_R_406 → 406", stripIdPrefix("DEMO_LL_R_406"), "406");
 check("另一种前缀形态（F346000SWLR008_6094 → 6094）", stripIdPrefix("F346000SWLR008_6094"), "6094");
 check("多级下划线（A_B_C_42 → 42）", stripIdPrefix("A_B_C_42"), "42");
 check("前缀中的数字不干扰（R_12AB_7 → 7）", stripIdPrefix("R_12AB_7"), "7");
@@ -192,14 +192,14 @@ check("undefined → 空串", stripIdPrefix(undefined), "");
 check("数字类型入参", stripIdPrefix(6094), "6094");
 // 数据形态回归：真实需求表 406 条（前缀统一）去前缀后必须无碰撞
 {
-  const ids = Array.from({ length: 406 }, (_, i) => `PDTMGR_LL_R_${i + 1}`);
+  const ids = Array.from({ length: 406 }, (_, i) => `DEMO_LL_R_${i + 1}`);
   const stripped = ids.map(stripIdPrefix);
   check("406 条真实形态 ID 去前缀后无碰撞", new Set(stripped).size, 406);
   check("首尾样例", [stripped[0], stripped[405]], ["1", "406"]);
 }
 // 前缀形态不唯一：同一份需求表可能混用多种前缀，去前缀后仍须无碰撞
 {
-  const prefixes = ["PDTMGR_LL_R_", "F346000SWLR008_", "SWLR_"];
+  const prefixes = ["DEMO_LL_R_", "F346000SWLR008_", "SWLR_"];
   const ids = Array.from({ length: 150 }, (_, i) => prefixes[i % 3] + (i + 1));
   const stripped = ids.map(stripIdPrefix);
   check("150 条混合前缀 ID 去前缀后无碰撞", new Set(stripped).size, 150);

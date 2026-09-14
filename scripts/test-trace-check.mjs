@@ -28,7 +28,7 @@ function eq(label, actual, expected) {
   ok(label, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
 }
 
-/* 列名与真实 PDT_LLR_Requirements.xlsx 一致（Section / Requirement ID / Title / Type） */
+/* 列名与 Demo_LLR_Requirements.xlsx 一致（Section / Requirement ID / Title / Type） */
 const COL = { id: "Requirement ID", content: "Title / Requirement Text", type: "Type", chapter: "Section" };
 const EMPTY_LLR = [];
 
@@ -254,7 +254,7 @@ function buildIndex(llrRows, fnNames) {
 }
 
 /* ============ 第 5 节：真实项目数据端到端 ============ */
-console.log("[5/6] 真实项目数据（demo/mock.js 内嵌 PDTManager）");
+console.log("[5/6] 演示项目数据端到端（demo/mock.js 内嵌合成 DemoProject）");
 let realReport = null; // 供第 7 节报告导出断言复用
 const realLlr = XLSX.utils.sheet_to_json(
   XLSX.read(Buffer.from(grab("LLR_B64").replace(/\s/g, ""), "base64"), { type: "buffer" }).Sheets["LLR"],
@@ -348,14 +348,14 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
     const head = llrRows.findIndex((r) => String(r[COL.chapter] ?? "").trim() !== "");
     llrRows.splice(head + 1, 0, {
       [COL.chapter]: "",
-      [COL.id]: "PDTMGR_LL_R_9999",
+      [COL.id]: "DEMO_LL_R_9999",
       [COL.content]: "Orphan requirement.",
       [COL.type]: "Requirement",
     });
     const rows = buildRealRows(buildIndex(llrRows, uniq));
     const r = auditTrace({ rows, llrRows, colMap: COL, nameSet: new Set(uniq) });
     ok("孤立 Requirement → 计入未被引用", r.requirement.orphaned > 0, r.requirement.orphaned);
-    ok("孤立 Requirement → 出现在孤儿列表", r.requirement.orphans.some((o) => o.id === "PDTMGR_LL_R_9999"));
+    ok("孤立 Requirement → 出现在孤儿列表", r.requirement.orphans.some((o) => o.id === "DEMO_LL_R_9999"));
   }
 
   // 缺陷 D：低层需求 ID 整体改号 → Parent ID 全体悬空

@@ -1277,7 +1277,7 @@ function mountFiles() {
 
 /* ---- 导出代码文档 Excel（章节号 / 需求内容 / Object Type / Parent ID） ----
 
-   Parent ID 关联规则（参考 PDT_LLR_Requirements.xlsx）：
+   Parent ID 关联规则（参考 Demo_LLR_Requirements.xlsx）：
    低层需求文档中"文档编号到函数名为止"——需求内容列的值恰为函数名的行是函数名行，
    其后直到下一个函数名行之前的所有行是该函数的需求内容行；
    函数符号行的 Parent ID = 这些需求内容行的 ID 列值集合（换行分隔），
