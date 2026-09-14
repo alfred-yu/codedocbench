@@ -54,6 +54,11 @@ function styleStub() {
   return new Proxy({}, { get: () => "", set: () => true });
 }
 
+/* 选择器缓存：真实 DOM 里同一节点反复 querySelector 得到同一对象，
+   这里按 (父元素 id, 选择器) 缓存，使「innerHTML 动态生成 + addEventListener」
+   的节点能被测试脚本主动触发；innerHTML 被覆盖时清空其下缓存，模拟节点重建。 */
+const selectorRegistry = new Map();
+
 /* 元素 stub：记录 addEventListener，便于测试主动触发点击 */
 function makeEl(id) {
   const listeners = {};
@@ -63,6 +68,12 @@ function makeEl(id) {
       if (k === "addEventListener")
         return (type, fn) => (listeners[type] || (listeners[type] = [])).push(fn);
       if (k === "__listeners") return listeners;
+      if (k === "querySelector")
+        return (sel) => {
+          const key = id + " >> " + sel;
+          if (!selectorRegistry.has(key)) selectorRegistry.set(key, makeEl(key));
+          return selectorRegistry.get(key);
+        };
       if (k === "style") return styleStub();
       if (k === "classList") return { add() {}, remove() {}, toggle() {}, contains: () => false };
       if (k === "dataset") return {};
@@ -78,6 +89,10 @@ function makeEl(id) {
       if (k === "options") state.options = v;
       if (k === "innerHTML") {
         state.options = [...String(v).matchAll(/<option[^>]*value="([^"]*)"/g)].map((m) => ({ value: m[1] }));
+        // 覆盖 innerHTML 等于重建子节点（真实 DOM 会丢弃旧节点及其监听器）
+        for (const key of [...selectorRegistry.keys()]) {
+          if (key.startsWith(id + " >> ")) selectorRegistry.delete(key);
+        }
       }
       if ((k === "textContent" || k === "innerHTML") && v)
         writes.push({ id, key: k, value: String(v) });
@@ -103,7 +118,11 @@ globalThis.document = {
   },
   createElement: (tag) => makeEl("new:" + tag),
   createTextNode: () => makeThing(),
-  querySelector: () => makeEl("qs"),
+  querySelector: (sel) => {
+    const key = "document >> " + sel;
+    if (!selectorRegistry.has(key)) selectorRegistry.set(key, makeEl(key));
+    return selectorRegistry.get(key);
+  },
   querySelectorAll: () => [],
   addEventListener() {},
   body: makeEl("body"),
@@ -225,6 +244,14 @@ const clickBtn = (id) => {
   for (const fn of fns) fn({});
   return true;
 };
+/* 点击 innerHTML 动态生成、由 JS 在重绘后绑定监听的节点（如预览区的翻页按钮） */
+const clickSelector = (sel) => {
+  const el = selectorRegistry.get("link-preview >> " + sel);
+  const fns = el && el.__listeners.click;
+  if (!fns || !fns.length) return false;
+  for (const fn of fns) fn({});
+  return true;
+};
 
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
@@ -249,7 +276,7 @@ if (!runBound) fail.push("link-run-btn 未绑定 click");
 if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
 if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
-console.log("[4/6] 生成链接文件（120 个函数 → 120 行链接，超过单文件 50 行上限）");
+console.log("[4/6] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
 const wMark = writes.length;
 clickBtn("link-gen-btn");
 await settle(400);
@@ -259,9 +286,50 @@ const statsHtml = htmlOf("link-stats");
 const previewHtml = htmlOf("link-preview");
 if (!/链接行 <b>120<\/b>/.test(statsHtml)) fail.push("统计未显示 120 行链接：" + statsHtml.slice(0, 160));
 if (!/切分为 <b>3<\/b> 个文件/.test(statsHtml)) fail.push("统计未显示将切分为 3 个文件：" + statsHtml.slice(0, 160));
-if (!previewHtml.includes("链接文件_1.xlsx")) fail.push("预览未标出分片文件名");
-if (!previewHtml.includes("第 1–50 行")) fail.push("预览未标出分片行区间");
 console.log("  统计:", statsHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+
+// --- 预览分页：一页 = 一个导出文件（≤50 行数据），翻页只影响预览 ---
+const rowsIn = (h) => (h.match(/<tr><td class="link-meta">/g) || []).length;
+const firstInId = (h) => (/<td class="link-id">([^<]*)</.exec(h) || [])[1];
+const prevDisabled = (h) => /id="link-page-prev"[^>]*disabled/.test(h);
+const nextDisabled = (h) => /id="link-page-next"[^>]*disabled/.test(h);
+const pageLabel = (h) => (/第 (\d+) \/ (\d+) 页/.exec(h) || []).slice(1).join("/");
+
+console.log(`  第 1 页: ${pageLabel(previewHtml)} 行数=${rowsIn(previewHtml)} 首行链入ID=${firstInId(previewHtml)}`);
+if (pageLabel(previewHtml) !== "1/3") fail.push("生成后默认不在第 1 页：" + pageLabel(previewHtml));
+if (rowsIn(previewHtml) !== 50) fail.push(`第 1 页应显示 50 行数据，实际 ${rowsIn(previewHtml)} 行`);
+if (firstInId(previewHtml) !== "1") fail.push("第 1 页首行链入 ID 应为 1，实际 " + firstInId(previewHtml));
+if (!previewHtml.includes("第 1–50 行")) fail.push("第 1 页页脚未标出「第 1–50 行」");
+if (!previewHtml.includes("链接文件_1.xlsx")) fail.push("第 1 页页脚未标出对应文件名");
+if (!prevDisabled(previewHtml)) fail.push("第 1 页「上一页」未禁用");
+if (nextDisabled(previewHtml)) fail.push("第 1 页「下一页」不应禁用");
+
+if (!clickSelector("#link-page-next")) fail.push("「下一页」未绑定 click");
+await settle(80);
+const h2 = htmlOf("link-preview");
+console.log(`  第 2 页: ${pageLabel(h2)} 行数=${rowsIn(h2)} 首行链入ID=${firstInId(h2)}`);
+if (pageLabel(h2) !== "2/3") fail.push("「下一页」未切到第 2 页：" + pageLabel(h2));
+if (rowsIn(h2) !== 50) fail.push(`第 2 页应显示 50 行数据，实际 ${rowsIn(h2)} 行`);
+if (firstInId(h2) !== "51") fail.push("第 2 页首行链入 ID 应为 51，实际 " + firstInId(h2));
+if (!h2.includes("第 51–100 行")) fail.push("第 2 页页脚未标出「第 51–100 行」");
+if (prevDisabled(h2)) fail.push("第 2 页「上一页」不应禁用");
+
+clickSelector("#link-page-next");
+await settle(80);
+const h3 = htmlOf("link-preview");
+console.log(`  第 3 页: ${pageLabel(h3)} 行数=${rowsIn(h3)} 首行链入ID=${firstInId(h3)}`);
+if (pageLabel(h3) !== "3/3") fail.push("未切到第 3 页：" + pageLabel(h3));
+if (rowsIn(h3) !== 20) fail.push(`第 3 页应显示 20 行数据，实际 ${rowsIn(h3)} 行`);
+if (firstInId(h3) !== "101") fail.push("第 3 页首行链入 ID 应为 101，实际 " + firstInId(h3));
+if (!h3.includes("第 101–120 行")) fail.push("第 3 页页脚未标出「第 101–120 行」");
+if (!nextDisabled(h3)) fail.push("末页「下一页」未禁用");
+
+clickSelector("#link-page-prev");
+await settle(80);
+const h2b = htmlOf("link-preview");
+console.log(`  上一页后: ${pageLabel(h2b)} 行数=${rowsIn(h2b)} 首行链入ID=${firstInId(h2b)}`);
+if (pageLabel(h2b) !== "2/3") fail.push("「上一页」未回到第 2 页：" + pageLabel(h2b));
+if (firstInId(h2b) !== "51") fail.push("返回第 2 页后首行链入 ID 应为 51，实际 " + firstInId(h2b));
 
 console.log("[5/6] 导出分片：校验真实写盘字节");
 clickBtn("link-run-btn");

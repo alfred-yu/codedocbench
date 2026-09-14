@@ -1556,6 +1556,7 @@ let linkRows = []; // 链接行：{ outId, inId }
 let linkSourceCount = 0; // Source Code 行数（链接来源记录数）
 let linkLinkedCount = 0; // 其中已关联到需求的符号数
 let linkGenerated = false; // 是否已由「生成链接文件」按钮触发过生成（未生成时预览只给提示、不可导出）
+let linkPage = 0; // 预览当前页（0-based）：一页 = 一个导出文件（≤ LINK_MAX_ROWS 行数据），仅影响预览、不影响导出
 const LINK_FILE_BASE = "链接文件"; // 分片文件名前缀（单片导出时由用户在「另存为」对话框里自定文件名）
 
 /* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
@@ -1617,6 +1618,15 @@ function paintLinkTable() {
       '<p class="placeholder">文档目录树中暂无 Source Code 行（请先在步骤 2 挂载 .c/.h 文件）</p>';
     return;
   }
+  // 分页：一页 = 一个导出文件（≤ LINK_MAX_ROWS 行数据），与导出共用同一份切分结果
+  const pageCount = parts.length;
+  // 页码夹取：重新生成 / 切换项目后行数变化，旧页码可能越界
+  if (linkPage > pageCount - 1) linkPage = pageCount - 1;
+  if (linkPage < 0) linkPage = 0;
+  const part = parts[linkPage];
+  const from = linkPage * LINK_MAX_ROWS + 1;
+  const to = from + part.length - 1;
+
   const cols = linkColgroup();
   const fields = ["项目名称", "模块名称", "模块路径", "ID"];
   const head =
@@ -1632,37 +1642,52 @@ function paintLinkTable() {
     `<td class="link-meta">${escapeHtml(cfg.outModule)}</td>` +
     `<td class="link-meta">${escapeHtml(cfg.outPath)}</td>` +
     `<td class="link-id">${r.outId}</td></tr>`;
-  // 多片时在每片开头插入分隔行，标出该片对应的文件名与行区间（仅在预览中呈现，不写入 Excel）
-  const bodyParts = [];
-  let from = 1;
-  parts.forEach((part, i) => {
-    const to = from + part.length - 1;
-    if (parts.length > 1) {
-      bodyParts.push(
-        `<tr class="link-part-sep"><td colspan="8">第 ${i + 1} 个文件 · ${escapeHtml(
-          partNames[i]
-        )} · 第 ${from}–${to} 行</td></tr>`
-      );
-    }
-    for (const r of part) bodyParts.push(rowHtml(r));
-    from = to + 1;
-  });
-  const body = bodyParts.join("");
+  const body = part.map(rowHtml).join("");
+  // 页脚 = 当前页 ↔ 导出文件 ↔ 行区间的对应关系；多页时并排给出翻页控件
   const info =
-    parts.length > 1
-      ? `共 ${linkRows.length} 行 · 切分为 ${parts.length} 个文件（每文件 ≤${LINK_MAX_ROWS} 行）· 与导出的 Excel 内容一致`
+    pageCount > 1
+      ? `第 ${linkPage + 1} / ${pageCount} 页 · ${escapeHtml(partNames[linkPage])} · 第 ${from}–${to} 行 · 与导出的 Excel 内容一致`
       : `共 ${linkRows.length} 行 · 与导出的 Excel 内容一致`;
+  const pager =
+    pageCount > 1
+      ? '<span class="link-pager">' +
+        `<button id="link-page-prev" class="btn btn-ghost btn-sm" type="button"${
+          linkPage === 0 ? " disabled" : ""
+        }>上一页</button>` +
+        `<span class="link-page-num">${linkPage + 1} / ${pageCount}</span>` +
+        `<button id="link-page-next" class="btn btn-ghost btn-sm" type="button"${
+          linkPage === pageCount - 1 ? " disabled" : ""
+        }>下一页</button>` +
+        "</span>"
+      : "";
   // 表头与表体分属两个区域：表头固定、表体独立纵向滚动（与步骤 3/4 同款布局）
   linkPreviewEl.innerHTML =
     `<div class="rel-preview-head"><table class="rel-table link-table">${cols}${head}</table></div>` +
     `<div class="rel-preview-scroll"><table class="rel-table link-table">${cols}<tbody>${body}</tbody></table></div>` +
-    `<div class="rel-preview-info">${info}</div>`;
+    `<div class="rel-preview-info link-preview-info"><span class="link-page-info">${info}</span>${pager}</div>`;
   // 宽表横向滚动时表头同步偏移，避免两区错位
   const headBox = linkPreviewEl.querySelector(".rel-preview-head");
   const scrollBox = linkPreviewEl.querySelector(".rel-preview-scroll");
   scrollBox.addEventListener("scroll", () => {
     headBox.scrollLeft = scrollBox.scrollLeft;
   });
+  if (pageCount > 1) {
+    linkPreviewEl
+      .querySelector("#link-page-prev")
+      .addEventListener("click", () => goLinkPage(linkPage - 1));
+    linkPreviewEl
+      .querySelector("#link-page-next")
+      .addEventListener("click", () => goLinkPage(linkPage + 1));
+  }
+}
+
+/* 翻页：只改变预览当前页，导出始终是全部页（全部文件） */
+function goLinkPage(n) {
+  const pageCount = Math.max(1, Math.ceil(linkRows.length / LINK_MAX_ROWS));
+  const next = Math.min(Math.max(n, 0), pageCount - 1);
+  if (next === linkPage) return;
+  linkPage = next;
+  paintLinkTable(); // 整块重绘 → 表体自然回到顶部
 }
 
 /* 生成链接文件：唯一入口是「生成链接文件」按钮
@@ -1696,6 +1721,7 @@ async function generateLink() {
   linkSourceCount = built.sourceCount;
   linkLinkedCount = built.linkedCount;
   linkGenerated = true;
+  linkPage = 0; // 重新生成后回到第 1 页
   linkRunBtn.disabled = false;
   linkRunBtn.removeAttribute("title");
   paintLinkTable();
@@ -1707,6 +1733,7 @@ function resetLinkGeneration() {
   linkSourceCount = 0;
   linkLinkedCount = 0;
   linkGenerated = false;
+  linkPage = 0;
   linkRunBtn.disabled = true;
   linkRunBtn.title = "请先点击「生成链接文件」";
   paintLinkTable();

@@ -1179,15 +1179,41 @@ body {
   text-align: right;
 }
 
-/* 分片分隔行：仅存在于预览，标出该片文件名与行区间，不写入 Excel */
-.link-table tr.link-part-sep td {
-  background: var(--panel-soft);
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  padding: 5px 10px;
-  border-top: 1px solid var(--border-strong);
+/* 分页页脚：左侧「第 N / M 页 · 文件名 · 行区间」，右侧翻页控件。
+   一页 = 一个导出文件（≤ LINK_MAX_ROWS 行数据），故页码与导出文件一一对应。 */
+.rel-preview-info.link-preview-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+.link-page-info {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.link-pager .btn:disabled {
+  opacity: 0.4;
+  background: transparent;
+}
+
+.link-page-num {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-2);
 }
 
 /* ---------------- 解析详情 ---------------- */
