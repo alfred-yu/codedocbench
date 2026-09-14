@@ -171,11 +171,16 @@
         <div class="gen-card">
           <div class="gen-toolbar">
             <div id="gen-stats" class="gen-stats"></div>
+            <button id="gen-trace-btn" class="btn btn-secondary" type="button" title="核对代码文档与低层需求的双向追溯覆盖">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="m9 11 2 2 4-4"/></svg>
+              <span>一致性校验</span>
+            </button>
             <button id="gen-run-btn" class="btn btn-primary" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
               <span>生成并导出 Excel</span>
             </button>
           </div>
+          <div id="gen-trace-panel" class="trace-panel hidden"></div>
           <div id="gen-preview" class="gen-preview">
             <p class="placeholder">文档目录树为空</p>
           </div>

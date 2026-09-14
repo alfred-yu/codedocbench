@@ -10,6 +10,8 @@ import {
   encodeLinkSheet,
   stripIdPrefix,
 } from "./link-split.js";
+// 一致性校验：代码文档 ↔ 低层需求的双向追溯核对（纯逻辑，可脱离界面回归）
+import { auditTrace, TRACE_SAMPLE_LIMIT } from "./trace-check.js";
 
 // 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
 document.title = `CodeDocBench (Powered By 余绍健, v${__APP_VERSION__})`;
@@ -124,6 +126,8 @@ const stepperEl = document.getElementById("stepper");
 const genPanel = document.getElementById("gen-panel");
 const genStats = document.getElementById("gen-stats");
 const genPreview = document.getElementById("gen-preview");
+const genTraceBtn = document.getElementById("gen-trace-btn");
+const genTracePanel = document.getElementById("gen-trace-panel");
 const relPanel = document.getElementById("rel-panel");
 const linkPanel = document.getElementById("link-panel");
 
@@ -235,6 +239,7 @@ stepperEl.addEventListener("click", (e) => {
 });
 
 genRunBtn.addEventListener("click", () => exportDocExcel());
+genTraceBtn.addEventListener("click", () => runTraceAudit());
 
 docAddBtn.addEventListener("click", () => addDocNode());
 docRenameBtn.addEventListener("click", () => renameDocNode());
@@ -324,6 +329,134 @@ async function renderGenPreview() {
     `<div class="gen-preview-head"><table class="rel-table gen-table">${colgroup}<thead><tr>${head}</tr></thead></table></div>` +
     `<div class="gen-preview-scroll"><table class="rel-table gen-table">${colgroup}<tbody>${body}</tbody></table></div>` +
     `<div class="gen-preview-info">共 ${rows.length} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）</div>`;
+}
+
+/* ---- 一致性校验（步骤 4 主入口）：代码文档 ↔ 低层需求的双向追溯核对 ----
+   与「生成链接文件」同为显式触发：进入步骤 4 先清空上次结论，点击按钮才重新核对，
+   避免展示与当前文档树 / 低层需求不一致的过期结果。
+   判定逻辑全部在 src/trace-check.js（纯模块），此处只负责取数与渲染 */
+function resetTracePanel() {
+  genTracePanel.innerHTML = "";
+  genTracePanel.classList.add("hidden");
+}
+
+async function runTraceAudit() {
+  if (!docTree.length) {
+    alert("文档目录树为空，请先添加章节");
+    return;
+  }
+  // 与导出同源：先确保已挂载源码的解析结果、低层需求均为最新
+  await refreshAllFileData();
+  await refreshLlrIfChanged();
+
+  const fnNames = collectFunctionNames();
+  const rows = collectDocRows(docTree, [], buildLlrFunctionIndex(fnNames));
+  const report = auditTrace({
+    rows,
+    llrRows: relRows, // 模块内低层需求数据行的变量名是 relRows
+    colMap: {
+      id: relColId.value,
+      content: relColContent.value,
+      type: relColObject.value,
+      chapter: relColChapter.value,
+    },
+    nameSet: new Set(fnNames),
+  });
+  renderTracePanel(report);
+}
+
+function renderTracePanel(report) {
+  const { code, requirement, extra, typeMapped, colMissing } = report;
+  const mark = (n) => (n ? "warn" : "ok");
+
+  const stats = [
+    `<span class="trace-stat">Source Code <b>${code.sourceTotal}</b> 行 · Parent ID 为空 <b class="${mark(
+      code.emptyParent
+    )}">${code.emptyParent}</b></span>`,
+    `<span class="trace-stat">Requirement <b>${requirement.total}</b> 行 · 未被引用 <b class="${mark(
+      requirement.orphaned
+    )}">${requirement.orphaned}</b></span>`,
+  ].join("");
+
+  // ① 代码侧：按数据章节分组，默认全部折叠，摘要行给「空 N / 总 M」，展开看明细
+  const sectionGroups = code.sections
+    .map((s) => {
+      const body = s.empty
+        ? `<ul class="trace-list">${s.samples
+            .map(
+              (x) =>
+                `<li><span class="trace-idx">#${x.index}</span><span class="trace-name">${escapeHtml(
+                  x.title
+                )}</span></li>`
+            )
+            .join("")}</ul>` +
+          (s.empty > s.samples.length
+            ? `<p class="trace-more">仅列出前 ${s.samples.length} 行，其余 ${
+                s.empty - s.samples.length
+              } 行的序号见生成文档页</p>`
+            : "")
+        : '<p class="trace-ok">该章节全部行均已关联需求</p>';
+      return (
+        `<details class="trace-group"><summary>` +
+        `<span class="trace-group-name">${escapeHtml(s.title)} 章</span>` +
+        `<span class="trace-group-count ${mark(s.empty)}">空 ${s.empty} / 总 ${s.total}</span>` +
+        `</summary>${body}</details>`
+      );
+    })
+    .join("");
+
+  // ② 需求侧：Requirement 行的反向覆盖
+  const orphanBody = requirement.orphaned
+    ? `<ul class="trace-list">${requirement.orphans
+        .slice(0, TRACE_SAMPLE_LIMIT)
+        .map(
+          (o) =>
+            `<li><span class="trace-idx">${escapeHtml(o.id)}</span><span class="trace-name">${escapeHtml(
+              o.content || o.block || "（无内容）"
+            )}</span></li>`
+        )
+        .join("")}</ul>` +
+      (requirement.orphaned > TRACE_SAMPLE_LIMIT
+        ? `<p class="trace-more">仅列出前 ${TRACE_SAMPLE_LIMIT} 条，共 ${requirement.orphaned} 条</p>`
+        : "")
+    : '<p class="trace-ok">低层需求中所有 Requirement 均已被代码文档引用</p>';
+  const orphanGroup =
+    `<details class="trace-group"><summary>` +
+    `<span class="trace-group-name">未被引用的 Requirement</span>` +
+    `<span class="trace-group-count ${mark(requirement.orphaned)}">${
+      requirement.orphaned
+    } 行</span></summary>${orphanBody}</details>`;
+
+  // 附带核对：悬空引用 / 重复追溯 / 口径差异
+  const extras = [];
+  if (extra.dangling.length)
+    extras.push(
+      `Parent ID 指向不存在的需求 ID：${extra.dangling.length} 处（如 ${escapeHtml(
+        extra.dangling[0].id
+      )}）`
+    );
+  if (extra.duplicated.length)
+    extras.push(`同一条需求被多个符号引用：${extra.duplicated.length} 条`);
+  if (extra.nonRequirementRefs.length)
+    extras.push(
+      `Parent ID 引用了非 Requirement 行的 ID：${extra.nonRequirementRefs.length} 个`
+    );
+
+  const notes = [];
+  if (colMissing.id) notes.push("未映射「ID 列」，无法生成 Parent ID");
+  if (colMissing.content) notes.push("未映射「需求内容列」，无法定位需求行");
+  if (!typeMapped) notes.push("未映射「Object Type 列」，需求侧校验退化为「所有带 ID 的行」");
+  else if (colMissing.chapter) notes.push("未映射「章节列」，需求块边界可能不准确");
+
+  genTracePanel.innerHTML =
+    `<div class="trace-head"><span class="trace-title">一致性校验</span>${stats}` +
+    (extras.length ? `<span class="trace-stat warn">${extras.join("；")}</span>` : "") +
+    `</div>` +
+    `<div class="trace-groups">${sectionGroups}${orphanGroup}</div>` +
+    (notes.length
+      ? `<div class="trace-notes">${notes.map((n) => `<span>⚠ ${escapeHtml(n)}</span>`).join("")}</div>`
+      : "");
+  genTracePanel.classList.remove("hidden");
 }
 
 /* ---- 低层需求 Excel 加载与列选择 ---- */
@@ -466,6 +599,7 @@ function closeProject() {
   mountSelection.clear();
   resetLlrState();
   resetLinkGeneration(); // 与低层需求同步复位：关闭项目后步骤 5 回到未生成状态
+  resetTracePanel(); // 校验结论依赖项目数据，关闭项目后一并清空
   try {
     // 仅清除"上次项目"指针；文档树在项目目录的 .codedocbench.json 中保留，
     // 重新打开同一项目时自动恢复
@@ -768,6 +902,7 @@ async function loadDocTree() {
   restoreLlr(savedLlr);
   restoreLink(savedLink);
   resetLinkGeneration();
+  resetTracePanel(); // 项目数据已换成新的一份，上次核对结论作废
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
@@ -1331,6 +1466,9 @@ function collectDocRows(nodes, nums, fnIndex) {
             title: it,
             objectType: fromSource ? "Source Code" : "Comment",
             parent: rowParent,
+            // 一致性校验按数据章节分组统计空 Parent ID，需带上归属（导出/链接表只取前 4 个字段，不受影响）
+            sectionKey: sec.isData,
+            sectionTitle: sec.title,
           });
         }
       }

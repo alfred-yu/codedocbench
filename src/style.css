@@ -426,6 +426,157 @@ body {
   color: var(--faint);
 }
 
+/* ---- 一致性校验面板（步骤 4）----
+   按数据章节分组折叠：摘要行给「空 N / 总 M」，展开才列明细，避免结构性空值淹没真实缺口 */
+#gen-trace-panel {
+  flex: none;
+  margin-top: 12px;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+
+.trace-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trace-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.trace-stat {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.trace-stat b {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.trace-stat b.warn,
+.trace-stat.warn {
+  color: #b45309;
+}
+
+.trace-stat b.ok {
+  color: #15803d;
+}
+
+.trace-groups {
+  padding: 2px 0 6px;
+}
+
+.trace-group {
+  border-bottom: 1px solid var(--border);
+}
+
+.trace-group:last-child {
+  border-bottom: 0;
+}
+
+.trace-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--text-2);
+  list-style: none;
+}
+
+.trace-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-group > summary::before {
+  content: "▸";
+  flex: none;
+  width: 10px;
+  color: var(--faint);
+}
+
+.trace-group[open] > summary::before {
+  content: "▾";
+}
+
+.trace-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-group-count {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+.trace-group-count.warn {
+  color: #b45309;
+}
+
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 12px 10px 34px;
+  list-style: none;
+}
+
+.trace-list li {
+  display: flex;
+  gap: 10px;
+  font-size: 0.78rem;
+}
+
+.trace-idx {
+  flex: none;
+  min-width: 86px;
+  text-align: right;
+  font-family: var(--mono);
+  color: var(--faint);
+}
+
+.trace-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.trace-ok,
+.trace-more {
+  margin: 0;
+  padding: 0 12px 10px 34px;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+.trace-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: #b45309;
+}
+
 /* 序号列：仅预览可见的行号辅助列，不导出到 Excel；表头不参与编号 */
 .gen-table td.gen-idx {
   color: var(--faint);

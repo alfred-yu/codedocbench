@@ -231,9 +231,9 @@ console.log("[smoke] 打包产物:", bundle);
 
 try {
   await import("file:///" + path.join(DIST, bundle).replace(/\\/g, "/"));
-  console.log("[1/6] 模块顶层执行完成");
+  console.log("[1/7] 模块顶层执行完成");
 } catch (e) {
-  console.log("[1/6] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
+  console.log("[1/7] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
   process.exit(1);
 }
 
@@ -256,16 +256,16 @@ const clickSelector = (sel) => {
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
 if (!treeEl) {
-  console.log("[2/6] 未找到打开项目的 click 监听 ❌");
+  console.log("[2/7] 未找到打开项目的 click 监听 ❌");
   process.exit(1);
 }
 for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
 await settle(400);
-console.log("[2/6] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
+console.log("[2/7] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
 if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
 if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
 
-console.log("[3/6] 步骤 5 按钮接线 +「未生成不可导出」守卫");
+console.log("[3/7] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");
 const runBound = clickBtn("link-run-btn");
 await settle(80);
@@ -276,7 +276,7 @@ if (!runBound) fail.push("link-run-btn 未绑定 click");
 if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
 if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
-console.log("[4/6] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
+console.log("[4/7] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
 const wMark = writes.length;
 clickBtn("link-gen-btn");
 await settle(400);
@@ -331,7 +331,7 @@ console.log(`  上一页后: ${pageLabel(h2b)} 行数=${rowsIn(h2b)} 首行链�
 if (pageLabel(h2b) !== "2/3") fail.push("「上一页」未回到第 2 页：" + pageLabel(h2b));
 if (firstInId(h2b) !== "51") fail.push("返回第 2 页后首行链入 ID 应为 51，实际 " + firstInId(h2b));
 
-console.log("[5/6] 导出分片：校验真实写盘字节");
+console.log("[5/7] 导出分片：校验真实写盘字节");
 clickBtn("link-run-btn");
 await settle(600);
 // 注意：save_file 也用于写工程数据文件（.codedocbench.json），这里只看导出的 Excel
@@ -380,7 +380,30 @@ if (previewHtml.includes("PDTMGR_LL_R_")) fail.push("预览中的链入 ID 仍�
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
-console.log("[6/6] 错误文案 / 未处理异常");
+console.log("[6/7] 一致性校验：按钮触发 + 面板渲染（步骤 4 主入口）");
+{
+  const wMark = writes.length;
+  const bound = clickBtn("gen-trace-btn");
+  await settle(400);
+  if (!bound) fail.push("gen-trace-btn 未绑定 click");
+  const panelHtml =
+    writes.slice(wMark).filter((w) => w.id === "gen-trace-panel").map((w) => w.value).pop() || "";
+  console.log("  面板:", panelHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140));
+  if (!panelHtml) fail.push("点击一致性校验后面板无内容");
+  // 120 个函数全部关联到需求、每条需求均被引用 → 两侧都应为 0 问题
+  if (!/Source Code <b>120<\/b> 行 · Parent ID 为空 <b class="ok">0<\/b>/.test(panelHtml))
+    fail.push("代码侧统计不符（应 Source Code 120 行、空 0）：" + panelHtml.slice(0, 180));
+  if (!/Requirement <b>120<\/b> 行 · 未被引用 <b class="ok">0<\/b>/.test(panelHtml))
+    fail.push("需求侧统计不符（应 Requirement 120 行、未被引用 0）：" + panelHtml.slice(0, 180));
+  if (!panelHtml.includes("Function Definition 章")) fail.push("未按数据章节分组渲染");
+  if (!panelHtml.includes("未被引用的 Requirement")) fail.push("缺少需求侧分组");
+  if (!/trace-group-count ok">空 0 \/ 总 120/.test(panelHtml))
+    fail.push("章节摘要未给出「空 N / 总 M」：" + panelHtml.slice(0, 200));
+  if (!panelHtml.includes("全部行均已关联需求") && !panelHtml.includes("均已被代码文档引用"))
+    fail.push("零问题分组未给出通过文案");
+}
+
+console.log("[7/7] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));
