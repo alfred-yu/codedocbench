@@ -298,15 +298,16 @@ async function renderGenPreview() {
     genPreview.innerHTML = '<p class="placeholder">文档目录树为空</p>';
     return;
   }
-  const head = ["章节号", "需求内容", "Object Type", "Parent ID"]
+  // 序号列：仅预览可见的辅助列（表头不参与编号，从第一行数据起为 1；不写入导出的 Excel）
+  const head = ["", "章节号", "需求内容", "Object Type", "Parent ID"]
     .map((h) => `<th>${h}</th>`)
     .join("");
   const colgroup =
-    '<colgroup><col style="width:12%"><col style="width:56%"><col style="width:16%"><col style="width:16%"></colgroup>';
+    '<colgroup><col style="width:6%"><col style="width:10%"><col style="width:52%"><col style="width:14%"><col style="width:18%"></colgroup>';
   const body = rows
-    .map((r) => {
+    .map((r, i) => {
       const titleCell = `<td class="${r.num !== "" ? "gen-title-cell" : ""}">${escapeHtml(r.title)}</td>`;
-      return `<tr><td class="mono">${escapeHtml(r.num)}</td>${titleCell}<td>${escapeHtml(r.objectType)}</td><td class="mono">${escapeHtml(r.parent).replaceAll("\n", "<br>")}</td></tr>`;
+      return `<tr><td class="gen-idx">${i + 1}</td><td class="mono">${escapeHtml(r.num)}</td>${titleCell}<td>${escapeHtml(r.objectType)}</td><td class="mono">${escapeHtml(r.parent).replaceAll("\n", "<br>")}</td></tr>`;
     })
     .join("");
   // 表头与表体分属两个区域：表头固定，表体独立滚动（固定列布局保证对齐）

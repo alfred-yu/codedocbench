@@ -412,6 +412,13 @@ body {
   color: var(--faint);
 }
 
+/* 序号列：仅预览可见的行号辅助列，不导出到 Excel；表头不参与编号 */
+.gen-table td.gen-idx {
+  color: var(--faint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 标题行（有章节号）的需求内容单元格：与导出 Excel 的加粗一致 */
 .gen-table td.gen-title-cell {
   font-weight: 700;
