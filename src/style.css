@@ -1097,6 +1097,74 @@ body {
   background: #f4f7fd;
 }
 
+/* ---------------- 链接文件页（步骤 5，与低层需求关联页同款双栏骨架） ---------------- */
+
+/* 文本输入：与 .rel-form select 保持同一外观 */
+.rel-form input[type="text"] {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.86rem;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.rel-form input[type="text"]:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+#link-config-panel {
+  width: 320px;
+  min-width: 264px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#link-preview-panel {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.link-toolbar {
+  margin: 0 12px;
+  padding-top: 12px;
+}
+
+/* 8 列固定布局：窄面板下由表体横向滚动，表头同步偏移 */
+.link-table {
+  min-width: 1140px;
+}
+
+.link-table th.link-group {
+  text-align: center;
+  background: #eef2f8;
+  color: var(--text-2);
+  letter-spacing: 0.8px;
+}
+
+.link-table td.link-meta {
+  color: var(--text-2);
+}
+
+.link-table td.link-id {
+  color: var(--text);
+  text-align: right;
+}
+
 /* ---------------- 解析详情 ---------------- */
 .detail-empty {
   color: var(--muted);

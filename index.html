@@ -183,15 +183,51 @@
       </div>
     </section>
 
-    <!-- 步骤 5：链接文件生成（v0.1.1 功能，占位界面） -->
+    <!-- 步骤 5：链接文件生成（链入/链出元信息 + 链接关系预览与导出） -->
     <section id="link-panel" class="hidden">
       <div id="link-body">
-        <div class="gen-card">
-          <div class="doc-pane-title">链接文件生成</div>
-          <div class="gen-preview">
-            <p class="placeholder">此功能正在开发中，敬请期待</p>
+        <aside id="link-config-panel">
+          <div class="doc-pane-title">链接文件配置</div>
+          <div class="rel-form">
+            <div class="rel-form-group">
+              <span class="rel-form-label">链入</span>
+              <label>项目名称
+                <input id="link-in-project" type="text" placeholder="如：飞行管理系统-软件" />
+              </label>
+              <label>模块名称
+                <input id="link-in-module" type="text" placeholder="如：F346000SWLR008" />
+              </label>
+              <label>模块路径
+                <input id="link-in-path" type="text" placeholder="如：飞行管理系统-软件/软件低层需求/" />
+              </label>
+            </div>
+            <div class="rel-form-group">
+              <span class="rel-form-label">链出</span>
+              <label>项目名称
+                <input id="link-out-project" type="text" placeholder="如：飞行管理系统-软件" />
+              </label>
+              <label>模块名称
+                <input id="link-out-module" type="text" placeholder="如：F346000SCTD004" />
+              </label>
+              <label>模块路径
+                <input id="link-out-path" type="text" placeholder="如：飞行管理系统-软件/软件CODE文档/" />
+              </label>
+            </div>
           </div>
-        </div>
+        </aside>
+        <section id="link-preview-panel">
+          <div class="doc-pane-title">链接文件预览</div>
+          <div class="gen-toolbar link-toolbar">
+            <div id="link-stats" class="gen-stats"></div>
+            <button id="link-run-btn" class="btn btn-primary" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
+              <span>生成并导出链接文件</span>
+            </button>
+          </div>
+          <div id="link-preview" class="rel-preview">
+            <p class="placeholder">填写链入/链出信息后在此预览</p>
+          </div>
+        </section>
       </div>
     </section>
 

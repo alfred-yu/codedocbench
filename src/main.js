@@ -217,6 +217,7 @@ function goStep(n) {
     renderDocProjectTree();
   }
   if (n === 4) renderGenPreview();
+  if (n === 5) renderLinkPreview();
   renderStepper();
 }
 
@@ -608,6 +609,7 @@ function buildProjectDataPayload() {
           },
         }
       : null,
+    link: linkCfg(),
   });
 }
 
@@ -705,12 +707,14 @@ async function loadDocTree() {
   }
   docTree = [];
   let savedLlr = null;
+  let savedLink = null;
   let legacyData = null;
   try {
     const bytes = await invoke("read_file", { path: projectDataFilePath(projectRoot) });
     const parsed = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes)));
     if (Array.isArray(parsed.docTree)) docTree = parsed.docTree;
     savedLlr = parsed.llr || null;
+    savedLink = parsed.link || null;
   } catch {
     // 项目文件不存在或不可读：回退读取旧版 localStorage 数据
     try {
@@ -721,6 +725,7 @@ async function loadDocTree() {
         else if (legacy && Array.isArray(legacy.docTree)) {
           legacyData = legacy.docTree;
           savedLlr = legacy.llr || null;
+          savedLink = legacy.link || null;
         }
       }
     } catch {
@@ -752,6 +757,7 @@ async function loadDocTree() {
   renderDocTree();
   refreshAllFileData();
   restoreLlr(savedLlr);
+  restoreLink(savedLink);
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
@@ -1492,6 +1498,224 @@ async function exportDocExcel() {
     alert(`导出失败：${err}`);
   }
 }
+
+/* ================= 步骤 5：链接文件生成 =================
+   链接关系表：链出 = Code 文档，链入 = 低层需求。
+   - 行范围：生成文档页中 Object Type 为 Source Code 的行（由源码解析出的符号行）
+   - 链出 ID：该行在生成文档页「序号」列的值（序号列即为此索引引入）
+   - 链入 ID：该行的 Parent ID；一个符号关联多个需求 ID 时拆成多行，各自成一条链接
+   - 链入/链出的项目名称、模块名称、模块路径均由用户输入，逐行填同一组值 */
+
+const linkInProject = document.getElementById("link-in-project");
+const linkInModule = document.getElementById("link-in-module");
+const linkInPath = document.getElementById("link-in-path");
+const linkOutProject = document.getElementById("link-out-project");
+const linkOutModule = document.getElementById("link-out-module");
+const linkOutPath = document.getElementById("link-out-path");
+const linkStats = document.getElementById("link-stats");
+const linkPreviewEl = document.getElementById("link-preview");
+const linkRunBtn = document.getElementById("link-run-btn");
+
+/* 用户输入的链入/链出元信息（随项目持久化） */
+function linkCfg() {
+  return {
+    inProject: linkInProject.value.trim(),
+    inModule: linkInModule.value.trim(),
+    inPath: linkInPath.value.trim(),
+    outProject: linkOutProject.value.trim(),
+    outModule: linkOutModule.value.trim(),
+    outPath: linkOutPath.value.trim(),
+  };
+}
+
+function restoreLink(link) {
+  const c = link || {};
+  linkInProject.value = c.inProject || "";
+  linkInModule.value = c.inModule || "";
+  linkInPath.value = c.inPath || "";
+  linkOutProject.value = c.outProject || "";
+  linkOutModule.value = c.outModule || "";
+  linkOutPath.value = c.outPath || "";
+}
+
+let linkRows = []; // 链接行：{ outId, inId }
+let linkSourceCount = 0; // Source Code 行数（链接来源记录数）
+let linkLinkedCount = 0; // 其中已关联到需求的符号数
+
+/* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
+function buildLinkRows(fnIndex) {
+  const rows = collectDocRows(docTree, [], fnIndex);
+  const out = [];
+  let sourceCount = 0;
+  let linkedCount = 0;
+  rows.forEach((r, i) => {
+    if (r.objectType !== "Source Code") return; // 仅源码符号行
+    sourceCount += 1;
+    const outId = i + 1; // 生成文档页序号列的值（该行在整张文档表中的位置）
+    const ids = String(r.parent || "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length) linkedCount += 1;
+    // 多个需求 ID 拆成多行：链出索引相同，链入 ID 各占一行
+    for (const inId of ids.length ? ids : [""]) {
+      out.push({ outId, inId });
+    }
+  });
+  return { rows: out, sourceCount, linkedCount };
+}
+
+function linkColgroup() {
+  const widths = [150, 135, 215, 70, 150, 135, 215, 70];
+  return `<colgroup>${widths.map((w) => `<col style="width:${w}px">`).join("")}</colgroup>`;
+}
+
+/* 仅按当前输入与已构建数据重绘（输入元信息时无需重新解析源码） */
+function paintLinkTable() {
+  const cfg = linkCfg();
+  linkStats.innerHTML = [
+    `<span class="gen-stat">链出记录（Source Code 行）<b>${linkSourceCount}</b></span>`,
+    `<span class="gen-stat">链接行 <b>${linkRows.length}</b></span>`,
+    `<span class="gen-stat">已关联需求 <b>${linkLinkedCount}/${linkSourceCount}</b></span>`,
+    linkSourceCount && !linkLinkedCount
+      ? '<span class="gen-stat warn">⚠ 尚未关联低层需求，链入 ID 将为空</span>'
+      : "",
+  ].join("");
+
+  if (!linkRows.length) {
+    linkPreviewEl.innerHTML =
+      '<p class="placeholder">文档目录树中暂无 Source Code 行（请先在步骤 2 挂载 .c/.h 文件）</p>';
+    return;
+  }
+  const cols = linkColgroup();
+  const fields = ["项目名称", "模块名称", "模块路径", "ID"];
+  const head =
+    '<thead><tr><th class="link-group" colspan="4">链入</th>' +
+    '<th class="link-group" colspan="4">链出</th></tr>' +
+    `<tr>${fields.concat(fields).map((h) => `<th>${h}</th>`).join("")}</tr></thead>`;
+  const body = linkRows
+    .map(
+      (r) =>
+        `<tr><td class="link-meta">${escapeHtml(cfg.inProject)}</td>` +
+        `<td class="link-meta">${escapeHtml(cfg.inModule)}</td>` +
+        `<td class="link-meta">${escapeHtml(cfg.inPath)}</td>` +
+        `<td class="link-id">${escapeHtml(r.inId)}</td>` +
+        `<td class="link-meta">${escapeHtml(cfg.outProject)}</td>` +
+        `<td class="link-meta">${escapeHtml(cfg.outModule)}</td>` +
+        `<td class="link-meta">${escapeHtml(cfg.outPath)}</td>` +
+        `<td class="link-id">${r.outId}</td></tr>`
+    )
+    .join("");
+  // 表头与表体分属两个区域：表头固定、表体独立纵向滚动（与步骤 3/4 同款布局）
+  linkPreviewEl.innerHTML =
+    `<div class="rel-preview-head"><table class="rel-table link-table">${cols}${head}</table></div>` +
+    `<div class="rel-preview-scroll"><table class="rel-table link-table">${cols}<tbody>${body}</tbody></table></div>` +
+    `<div class="rel-preview-info">共 ${linkRows.length} 行 · 与导出的 Excel 内容一致</div>`;
+  // 宽表横向滚动时表头同步偏移，避免两区错位
+  const headBox = linkPreviewEl.querySelector(".rel-preview-head");
+  const scrollBox = linkPreviewEl.querySelector(".rel-preview-scroll");
+  scrollBox.addEventListener("scroll", () => {
+    headBox.scrollLeft = scrollBox.scrollLeft;
+  });
+}
+
+async function renderLinkPreview() {
+  // 数据行取自最新解析结果；低层需求被外部修改时自动重读
+  await refreshAllFileData();
+  await refreshLlrIfChanged();
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const built = buildLinkRows(fnIndex);
+  linkRows = built.rows;
+  linkSourceCount = built.sourceCount;
+  linkLinkedCount = built.linkedCount;
+  paintLinkTable();
+}
+
+/* 导出链接文件：链入（项目名称/模块名称/模块路径/ID）+ 链出（同 4 列），双行表头 */
+async function exportLinkExcel() {
+  if (!docTree.length) {
+    alert("文档目录树为空，请先构建文档目录树");
+    return;
+  }
+  await refreshAllFileData();
+  await refreshLlrIfChanged();
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const built = buildLinkRows(fnIndex);
+  linkRows = built.rows;
+  linkSourceCount = built.sourceCount;
+  linkLinkedCount = built.linkedCount;
+  paintLinkTable();
+
+  if (!linkRows.length) {
+    alert("没有可导出的链接记录：文档目录树中暂无 Source Code 行");
+    return;
+  }
+  const unlinked = linkSourceCount - linkLinkedCount;
+  if (unlinked > 0) {
+    const ok = confirm(
+      `有 ${unlinked} 个符号行未关联到低层需求，这些行的链入 ID 为空。\n是否继续导出？`
+    );
+    if (!ok) return;
+  }
+
+  const cfg = linkCfg();
+  const fieldRow = ["项目名称", "模块名称", "模块路径", "ID"];
+  const aoa = [
+    ["链入", "", "", "", "链出", "", "", ""],
+    fieldRow.concat(fieldRow),
+    ...linkRows.map((r) => [
+      cfg.inProject, cfg.inModule, cfg.inPath, r.inId,
+      cfg.outProject, cfg.outModule, cfg.outPath, r.outId,
+    ]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  // 分组表头跨列合并：链入 A1:D1、链出 E1:H1
+  ws["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
+    { s: { r: 0, c: 4 }, e: { r: 0, c: 7 } },
+  ];
+  ws["!cols"] = [
+    { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 12 },
+    { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 12 },
+  ];
+  // 两行表头均加粗
+  for (const addr of ["A1", "E1", "A2", "B2", "C2", "D2", "E2", "F2", "G2", "H2"]) {
+    const cell = ws[addr];
+    if (cell) cell.s = { font: { bold: true } };
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "链接文件");
+  const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const filePath = await save({
+    title: "导出链接文件",
+    defaultPath: "链接文件.xlsx",
+    filters: [{ name: "Excel 文件", extensions: ["xlsx"] }],
+  });
+  if (!filePath) return; // 用户取消
+
+  try {
+    await invoke("save_file", { path: filePath, data: Array.from(bytes) });
+    alert(`已导出：${filePath}`);
+  } catch (err) {
+    alert(`导出失败：${err}`);
+  }
+}
+
+// 输入变更：随项目持久化，并即时刷新预览中的元信息列（无需重新解析源码）
+for (const el of [
+  linkInProject, linkInModule, linkInPath,
+  linkOutProject, linkOutModule, linkOutPath,
+]) {
+  el.addEventListener("input", () => {
+    saveDocTree();
+    if (currentStep === 5) paintLinkTable();
+  });
+}
+linkRunBtn.addEventListener("click", () => exportLinkExcel());
 
 /* ================= 项目文件目录树（右，可勾选挂载） ================= */
 
