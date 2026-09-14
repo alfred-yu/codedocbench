@@ -171,26 +171,39 @@ parts137.forEach((p, i) => {
 });
 check("三片合并后链出 ID = 1..137", outIds, Array.from({ length: 137 }, (_, i) => i + 1));
 
-console.log("[7] 链入 ID 去前缀：只保留尾部数值部分");
+console.log("[7] 链入 ID 去前缀：按 _ 切分取最后一段（前缀形态不固定）");
 check("PDTMGR_LL_R_1 → 1", stripIdPrefix("PDTMGR_LL_R_1"), "1");
 check("PDTMGR_LL_R_406 → 406", stripIdPrefix("PDTMGR_LL_R_406"), "406");
+check("另一种前缀形态（F346000SWLR008_6094 → 6094）", stripIdPrefix("F346000SWLR008_6094"), "6094");
+check("多级下划线（A_B_C_42 → 42）", stripIdPrefix("A_B_C_42"), "42");
 check("前缀中的数字不干扰（R_12AB_7 → 7）", stripIdPrefix("R_12AB_7"), "7");
 check("前导零原样保留（R_007 → 007）", stripIdPrefix("R_007"), "007");
-check("无前缀纯数字不变", stripIdPrefix("6094"), "6094");
+check("无下划线纯数字不变", stripIdPrefix("6094"), "6094");
 check("超长数字不丢精度", stripIdPrefix("R_9007199254740993123"), "9007199254740993123");
 check("前后空白裁剪", stripIdPrefix("  R_42  "), "42");
-check("结尾无数字 → 原样返回", stripIdPrefix("N/A"), "N/A");
-check("结尾无数字（带数字但不在尾部）→ 原样返回", stripIdPrefix("R_5X"), "R_5X");
+check("连续下划线（R__42 → 42）", stripIdPrefix("R__42"), "42");
+check("尾部多余下划线忽略（R_007_ → 007）", stripIdPrefix("R_007_"), "007");
+check("无下划线非数字原样返回（N/A → N/A）", stripIdPrefix("N/A"), "N/A");
+check("最后一段非纯数字也照取（R_5X → 5X）", stripIdPrefix("R_5X"), "5X");
+check("中文前缀（低层需求_88 → 88）", stripIdPrefix("低层需求_88"), "88");
 check("空串 → 空串", stripIdPrefix(""), "");
 check("null → 空串", stripIdPrefix(null), "");
 check("undefined → 空串", stripIdPrefix(undefined), "");
 check("数字类型入参", stripIdPrefix(6094), "6094");
-// 数据形态回归：真实需求表 406 条 ID 前缀统一，去前缀后必须无碰撞
+// 数据形态回归：真实需求表 406 条（前缀统一）去前缀后必须无碰撞
 {
   const ids = Array.from({ length: 406 }, (_, i) => `PDTMGR_LL_R_${i + 1}`);
   const stripped = ids.map(stripIdPrefix);
   check("406 条真实形态 ID 去前缀后无碰撞", new Set(stripped).size, 406);
   check("首尾样例", [stripped[0], stripped[405]], ["1", "406"]);
+}
+// 前缀形态不唯一：同一份需求表可能混用多种前缀，去前缀后仍须无碰撞
+{
+  const prefixes = ["PDTMGR_LL_R_", "F346000SWLR008_", "SWLR_"];
+  const ids = Array.from({ length: 150 }, (_, i) => prefixes[i % 3] + (i + 1));
+  const stripped = ids.map(stripIdPrefix);
+  check("150 条混合前缀 ID 去前缀后无碰撞", new Set(stripped).size, 150);
+  check("混合前缀首尾样例", [stripped[0], stripped[149]], ["1", "150"]);
 }
 
 if (fail.length) {
