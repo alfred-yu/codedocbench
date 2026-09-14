@@ -24,6 +24,22 @@ export const LINK_HEADER_CELLS = [
 ];
 
 /**
+ * 链入 ID 取值：只保留尾部的数值部分，去掉前缀。
+ * 低层需求 ID 形如 `PDTMGR_LL_R_123`，链接文件只写数值部分 `123`
+ * （实测 406 条需求 ID 前缀统一、去前缀后无碰撞）。
+ * - 字符串原样保留数字（不转数值类型），避免前导零丢失与超长 ID 精度问题；
+ * - 结尾不含数字时原样返回（不做猜测性裁剪）；空值返回空串。
+ * @param {*} id 原始需求 ID
+ * @returns {string} 去掉前缀后的 ID
+ */
+export function stripIdPrefix(id) {
+  const s = String(id == null ? "" : id).trim();
+  if (!s) return "";
+  const m = /^(.*?)(\d+)$/.exec(s);
+  return m ? m[2] : s;
+}
+
+/**
  * 按 size 行切分数据行。严格按行数切：同一符号关联多条需求时，
  * 其各行允许落在相邻两片（分片后每行仍是独立链接记录，语义不变）。
  * @param {Array} rows 链接行 { outId, inId }

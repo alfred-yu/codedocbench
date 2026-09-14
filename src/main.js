@@ -2,12 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 // xlsx-js-style：SheetJS 的样式支持分支（API 兼容），用于导出时加粗标题行
 import * as XLSX from "xlsx-js-style";
-// 链接文件分片规则（导入系统限定单文件 ≤50 数据行）
+// 链接文件分片规则（导入系统限定单文件 ≤50 数据行）+ 链入 ID 去前缀
 import {
   LINK_MAX_ROWS,
   splitLinkRows,
   partFileNames,
   encodeLinkSheet,
+  stripIdPrefix,
 } from "./link-split.js";
 
 // 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
@@ -1512,7 +1513,8 @@ async function exportDocExcel() {
    链接关系表：链出 = Code 文档，链入 = 低层需求。
    - 行范围：生成文档页中 Object Type 为 Source Code 的行（由源码解析出的符号行）
    - 链出 ID：该行在生成文档页「序号」列的值（序号列即为此索引引入）
-   - 链入 ID：该行的 Parent ID；一个符号关联多个需求 ID 时拆成多行，各自成一条链接
+   - 链入 ID：该行的 Parent ID，仅保留尾部数值部分（去掉 `PDTMGR_LL_R_` 之类前缀）；
+     一个符号关联多个需求 ID 时拆成多行，各自成一条链接
    - 链入/链出的项目名称、模块名称、模块路径均由用户输入，逐行填同一组值
    - 分片：导入系统限定单个链接文件最多 LINK_MAX_ROWS 行数据，超出按行序切分为多个文件
      （切分规则与矩阵构造见 src/link-split.js，便于脱离界面回归） */
@@ -1571,9 +1573,10 @@ function buildLinkRows(fnIndex) {
       .map((s) => s.trim())
       .filter(Boolean);
     if (ids.length) linkedCount += 1;
-    // 多个需求 ID 拆成多行：链出索引相同，链入 ID 各占一行
+    // 多个需求 ID 拆成多行：链出索引相同，链入 ID 各占一行；
+    // 链入 ID 只保留尾部数值部分（去掉 PDTMGR_LL_R_ 之类前缀）
     for (const inId of ids.length ? ids : [""]) {
-      out.push({ outId, inId });
+      out.push({ outId, inId: stripIdPrefix(inId) });
     }
   });
   return { rows: out, sourceCount, linkedCount };

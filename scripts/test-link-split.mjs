@@ -13,6 +13,7 @@ import {
   partFileNames,
   buildLinkAoa,
   encodeLinkSheet,
+  stripIdPrefix,
 } from "../src/link-split.js";
 
 const require = createRequire(import.meta.url);
@@ -169,6 +170,28 @@ parts137.forEach((p, i) => {
   for (let r = 3; r <= lastRow; r++) outIds.push(s["H" + r].v);
 });
 check("三片合并后链出 ID = 1..137", outIds, Array.from({ length: 137 }, (_, i) => i + 1));
+
+console.log("[7] 链入 ID 去前缀：只保留尾部数值部分");
+check("PDTMGR_LL_R_1 → 1", stripIdPrefix("PDTMGR_LL_R_1"), "1");
+check("PDTMGR_LL_R_406 → 406", stripIdPrefix("PDTMGR_LL_R_406"), "406");
+check("前缀中的数字不干扰（R_12AB_7 → 7）", stripIdPrefix("R_12AB_7"), "7");
+check("前导零原样保留（R_007 → 007）", stripIdPrefix("R_007"), "007");
+check("无前缀纯数字不变", stripIdPrefix("6094"), "6094");
+check("超长数字不丢精度", stripIdPrefix("R_9007199254740993123"), "9007199254740993123");
+check("前后空白裁剪", stripIdPrefix("  R_42  "), "42");
+check("结尾无数字 → 原样返回", stripIdPrefix("N/A"), "N/A");
+check("结尾无数字（带数字但不在尾部）→ 原样返回", stripIdPrefix("R_5X"), "R_5X");
+check("空串 → 空串", stripIdPrefix(""), "");
+check("null → 空串", stripIdPrefix(null), "");
+check("undefined → 空串", stripIdPrefix(undefined), "");
+check("数字类型入参", stripIdPrefix(6094), "6094");
+// 数据形态回归：真实需求表 406 条 ID 前缀统一，去前缀后必须无碰撞
+{
+  const ids = Array.from({ length: 406 }, (_, i) => `PDTMGR_LL_R_${i + 1}`);
+  const stripped = ids.map(stripIdPrefix);
+  check("406 条真实形态 ID 去前缀后无碰撞", new Set(stripped).size, 406);
+  check("首尾样例", [stripped[0], stripped[405]], ["1", "406"]);
+}
 
 if (fail.length) {
   console.log(`\n结论: 分片回归失败 ❌  ${pass} 通过 / ${fail.length} 失败`);

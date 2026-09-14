@@ -57,7 +57,7 @@ function styleStub() {
 /* 元素 stub：记录 addEventListener，便于测试主动触发点击 */
 function makeEl(id) {
   const listeners = {};
-  const state = { id, textContent: "", innerHTML: "", className: "", value: "", disabled: false };
+  const state = { id, textContent: "", innerHTML: "", className: "", value: "", disabled: false, options: [] };
   return new Proxy(function () {}, {
     get(t, k) {
       if (k === "addEventListener")
@@ -73,6 +73,12 @@ function makeEl(id) {
     },
     set(t, k, v) {
       if (k in state) state[k] = v;
+      // <select> 的列映射依赖 .options（applyRelMapping 会用 [...sel.options].some(...) 校验列名），
+      // 故写入 innerHTML 时同步解析出 <option value="...">
+      if (k === "options") state.options = v;
+      if (k === "innerHTML") {
+        state.options = [...String(v).matchAll(/<option[^>]*value="([^"]*)"/g)].map((m) => ({ value: m[1] }));
+      }
       if ((k === "textContent" || k === "innerHTML") && v)
         writes.push({ id, key: k, value: String(v) });
       return true;
@@ -115,11 +121,37 @@ const FUNC_COUNT = 120;
 const FUNCS = Array.from({ length: FUNC_COUNT }, (_, i) => ({
   name: "fn_" + String(i + 1).padStart(3, "0"),
 }));
+
+/* 低层需求（LLR）真实形态：ID 列带前缀 `PDTMGR_LL_R_<n>`。
+   每个函数一个需求块（函数名行 + 一条 Requirement 行），
+   用于端到端验证「链入 ID 只保留尾部数值部分」。 */
+const LLR_PATH = path.join(ROOT, "PDT_LLR_Requirements.xlsx");
+const LLR_HEADER = ["Requirement ID", "Section", "Title / Requirement Text", "Type"];
+const LLR_AOA = [LLR_HEADER];
+for (let i = 1; i <= FUNC_COUNT; i++) {
+  const name = FUNCS[i - 1].name;
+  LLR_AOA.push(["", `4.2.4.1.${i}`, name, ""]); // 章节/函数名边界行
+  LLR_AOA.push([`PDTMGR_LL_R_${i}`, "", `The ${name} function shall do its job.`, "Requirement"]);
+}
+const LLR_BYTES = (() => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(LLR_AOA), "LLR");
+  return Array.from(new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "buffer" })));
+})();
+
 const PROJECT_PAYLOAD = JSON.stringify({
   version: 1,
   savedAt: 0,
   docTree: [{ id: 1, type: "file", title: "big.c", path: SOURCE_PATH, children: [] }],
-  llr: null,
+  llr: {
+    path: LLR_PATH,
+    mapping: {
+      chapter: "Section",
+      id: "Requirement ID",
+      content: "Title / Requirement Text",
+      objectType: "Type",
+    },
+  },
   link: {
     inProject: "P-IN", inModule: "SWLR008", inPath: "P/LLR/",
     outProject: "P-OUT", outModule: "SCTD004", outPath: "P/CODE/",
@@ -137,6 +169,7 @@ const tauriInvoke = async (cmd, args) => {
     if (String(args.path).endsWith(PROJECT_DATA_FILENAME)) {
       return Array.from(new TextEncoder().encode(PROJECT_PAYLOAD));
     }
+    if (args.path === LLR_PATH) return LLR_BYTES; // 低层需求 Excel
     throw new Error("ENOENT: 文件不存在"); // 导出时的同名覆盖探测走这条
   }
   if (cmd === "parse_file")
@@ -240,9 +273,10 @@ console.log("  写出 Excel:", xlsxFiles.length, "→", names.join(", "));
 if (xlsxFiles.length !== 3) fail.push(`应导出 3 个 Excel，实际 ${xlsxFiles.length} 个：${names.join(", ")}`);
 if (JSON.stringify(names) !== JSON.stringify(["链接文件_1.xlsx", "链接文件_2.xlsx", "链接文件_3.xlsx"]))
   fail.push("文件名为 " + JSON.stringify(names));
-// 逐文件解码：数据行数、zip 魔数、链出 ID 连续且不重复
+// 逐文件解码：数据行数、zip 魔数、链出 ID 连续且不重复、链入 ID 已去前缀
 const rowsPerFile = [];
 const outIds = [];
+const inIds = [];
 for (const f of xlsxFiles) {
   const bytes = new Uint8Array(f.data);
   if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) fail.push(`${path.basename(f.path)} 不是 zip/xlsx 字节`);
@@ -253,7 +287,10 @@ for (const f of xlsxFiles) {
   }
   const lastRow = XLSX.utils.decode_range(sheet["!ref"]).e.r + 1;
   rowsPerFile.push(lastRow - 2); // 去掉两行表头
-  for (let r = 3; r <= lastRow; r++) outIds.push(sheet["H" + r].v);
+  for (let r = 3; r <= lastRow; r++) {
+    outIds.push(sheet["H" + r].v);
+    inIds.push(sheet["D" + r].v);
+  }
 }
 console.log("  每文件数据行数:", JSON.stringify(rowsPerFile), "| 链出 ID 共", outIds.length, "个");
 if (JSON.stringify(rowsPerFile) !== JSON.stringify([50, 50, 20]))
@@ -261,6 +298,17 @@ if (JSON.stringify(rowsPerFile) !== JSON.stringify([50, 50, 20]))
 if (outIds.length !== 120) fail.push(`三片合计应为 120 行，实际 ${outIds.length} 行`);
 if (new Set(outIds).size !== outIds.length) fail.push("链出 ID 跨片出现重复");
 if (!outIds.every((v, i) => i === 0 || v > outIds[i - 1])) fail.push("链出 ID 未保持递增（可能被重编）");
+// 链入 ID：源数据带前缀 PDTMGR_LL_R_<n>，导出必须只剩数值部分
+console.log("  链入 ID 前 3 个:", JSON.stringify(inIds.slice(0, 3)), "末 1 个:", JSON.stringify(inIds.slice(-1)));
+if (inIds.some((v) => v == null || v === "")) fail.push("存在空的链入 ID（低层需求未关联）");
+if (inIds.some((v) => String(v).includes("PDTMGR"))) fail.push("链入 ID 仍带前缀：" + JSON.stringify(inIds.filter((v) => String(v).includes("PDTMGR")).slice(0, 3)));
+{
+  const expect = Array.from({ length: 120 }, (_, i) => String(i + 1));
+  if (JSON.stringify(inIds.map(String)) !== JSON.stringify(expect))
+    fail.push("链入 ID 去前缀后应为 1..120，实际前 3 个 " + JSON.stringify(inIds.slice(0, 3)));
+}
+// 预览也必须同步去前缀（预览与导出同口径）
+if (previewHtml.includes("PDTMGR_LL_R_")) fail.push("预览中的链入 ID 仍带前缀（预览与导出口径不一致）");
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
