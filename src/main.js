@@ -457,6 +457,7 @@ function closeProject() {
   docEditId = null;
   mountSelection.clear();
   resetLlrState();
+  resetLinkGeneration(); // 与低层需求同步复位：关闭项目后步骤 5 回到未生成状态
   try {
     // 仅清除"上次项目"指针；文档树在项目目录的 .codedocbench.json 中保留，
     // 重新打开同一项目时自动恢复
@@ -1516,6 +1517,7 @@ const linkOutPath = document.getElementById("link-out-path");
 const linkStats = document.getElementById("link-stats");
 const linkPreviewEl = document.getElementById("link-preview");
 const linkRunBtn = document.getElementById("link-run-btn");
+const linkGenBtn = document.getElementById("link-gen-btn");
 
 /* 用户输入的链入/链出元信息（随项目持久化） */
 function linkCfg() {
@@ -1542,6 +1544,7 @@ function restoreLink(link) {
 let linkRows = []; // 链接行：{ outId, inId }
 let linkSourceCount = 0; // Source Code 行数（链接来源记录数）
 let linkLinkedCount = 0; // 其中已关联到需求的符号数
+let linkGenerated = false; // 是否已由「生成链接文件」按钮触发过生成（未生成时预览只给提示、不可导出）
 
 /* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
 function buildLinkRows(fnIndex) {
@@ -1676,19 +1679,11 @@ function resetLinkGeneration() {
 
 /* 导出链接文件：链入（项目名称/模块名称/模块路径/ID）+ 链出（同 4 列），双行表头 */
 async function exportLinkExcel() {
-  if (!docTree.length) {
-    alert("文档目录树为空，请先构建文档目录树");
+  // 导出内容即预览内容：未生成时不允许导出，避免导出未经确认的数据
+  if (!linkGenerated) {
+    alert("请先点击「生成链接文件」生成链接文件后再导出");
     return;
   }
-  await refreshAllFileData();
-  await refreshLlrIfChanged();
-  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
-  const built = buildLinkRows(fnIndex);
-  linkRows = built.rows;
-  linkSourceCount = built.sourceCount;
-  linkLinkedCount = built.linkedCount;
-  paintLinkTable();
-
   if (!linkRows.length) {
     alert("没有可导出的链接记录：文档目录树中暂无 Source Code 行");
     return;
