@@ -218,7 +218,11 @@ function buildRealRows(fnIndex) {
         rows.push({
           num: "",
           title: it,
-          objectType: fromSource ? "Source Code" : "Comment",
+          // 与 src/main.js collectDocRows 同口径：仅全局变量与函数章视为 Source Code
+          objectType:
+            fromSource && (sec.key === "globals" || sec.key === "functions")
+              ? "Source Code"
+              : "Comment",
           parent,
           sectionKey: sec.key,
           sectionTitle: sec.title,
@@ -267,16 +271,17 @@ const realLlr = XLSX.utils.sheet_to_json(
   const r = auditTrace({ rows, llrRows: realLlr, colMap: COL, nameSet: new Set(uniq) });
   realReport = r;
 
-  eq("真实数据：Source Code 行数（不含 N/A 占位行）", r.code.sourceTotal, 108);
-  eq("真实数据：空 Parent ID 行数", r.code.emptyParent, 46);
+  // Object Type 新口径：仅 globals/functions 为 Source Code（types 31 / macros 5 / constants 7 行退出口径）
+  eq("真实数据：Source Code 行数（globals 3 + functions 62）", r.code.sourceTotal, 65);
+  eq("真实数据：空 Parent ID 行数（globals 章结构性空值）", r.code.emptyParent, 3);
   eq("真实数据：Function 章零空值", r.code.sections.find((s) => s.key === "functions").empty, 0);
   eq("真实数据：Function 章总数", r.code.sections.find((s) => s.key === "functions").total, 62);
-  // 非函数章行数（按 sectionKey）：types 31 / globals 3 / macros 5 / constants 7
+  // 非函数章中仅 globals 留在 Source Code 口径内；types/macros/constants 已按 Comment 排除
   const byKey = Object.fromEntries(r.code.sections.map((s) => [s.key, [s.total, s.empty]]));
-  eq("真实数据：Type 章 总/空", byKey.types, [31, 31]);
   eq("真实数据：Global 章 总/空", byKey.globals, [3, 3]);
-  eq("真实数据：Macro 章 总/空", byKey.macros, [5, 5]);
-  eq("真实数据：Constant 章 总/空", byKey.constants, [7, 7]);
+  eq("真实数据：Type 章不进入 Source Code 口径", byKey.types, undefined);
+  eq("真实数据：Macro 章不进入 Source Code 口径", byKey.macros, undefined);
+  eq("真实数据：Constant 章不进入 Source Code 口径", byKey.constants, undefined);
   eq("真实数据：Requirement 行数", r.requirement.total, 271);
   eq("真实数据：Requirement 全覆盖（0 孤儿）", r.requirement.orphaned, 0);
   eq("真实数据：无悬空引用", r.extra.dangling.length, 0);
@@ -284,14 +289,14 @@ const realLlr = XLSX.utils.sheet_to_json(
   eq("真实数据：无非 Requirement 引用（生成与校验口径当前一致）", r.extra.nonRequirementRefs, []);
   eq("真实数据：低层需求总行数", realLlr.length, 406);
   // 占比（界面两视角直接展示的两个数）
-  eq("真实数据：代码侧空值占比 = 46 / 108", r.code.emptyRatio, 46 / 108);
+  eq("真实数据：代码侧空值占比 = 3 / 65", r.code.emptyRatio, 3 / 65);
   eq("真实数据：Function 章空值占比 = 0", r.code.sections.find((s) => s.key === "functions").emptyRatio, 0);
   eq("真实数据：需求侧遗漏占比 = 0 / 271", r.requirement.orphanRatio, 0);
-  // 空值行数与「非函数章行数」完全吻合 → 空值全部来自非函数章，函数章零空值
+  // 空值行数与「非函数章行数」完全吻合 → 空值全部来自 globals 章，函数章零空值
   const nonFn = r.code.sections.filter((s) => s.key !== "functions").reduce((s, g) => s + g.total, 0);
   eq("真实数据：空 Parent ID 全部来自非函数章", r.code.emptyParent, nonFn);
   const emptySections = r.code.sections.filter((s) => s.empty > 0).map((s) => s.key).sort();
-  eq("真实数据：所有非函数章均为结构性空值", emptySections, ["constants", "globals", "macros", "types"]);
+  eq("真实数据：仅 globals 章为结构性空值", emptySections, ["globals"]);
 }
 
 /* ============ 第 6 节：灵敏度注入（注入缺陷必须被检出） ============ */
@@ -317,7 +322,7 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
     const rows = buildRealRows(buildIndex(llrRows, uniq));
     const r = auditTrace({ rows, llrRows, colMap: COL, nameSet });
     const fnSection = r.code.sections.find((s) => s.key === "functions");
-    ok("删掉整块需求行 → 空 Parent ID 数上升", r.code.emptyParent > 46, r.code.emptyParent);
+    ok("删掉整块需求行 → 空 Parent ID 数上升", r.code.emptyParent > 3, r.code.emptyParent);
     ok("删掉整块需求行 → Function 章出现空值", fnSection.empty > 0, fnSection.empty);
     ok(
       "删掉整块需求行 → 空值明细为该函数",
@@ -392,23 +397,24 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   };
   // 汇总页：真实数据的两视角数字（与第 5 节断言同一坐标系）
   eq("汇总：生成时间写入", val("生成时间"), "2026-09-15 00:00");
-  eq("汇总：视角一分母（Source Code 总行数）", val("Source Code 总行数"), 108);
-  eq("汇总：视角一空值", val("Parent ID 为空"), 46);
-  eq("汇总：视角一占比 46/108", val("空值占比"), "42.6%");
+  eq("汇总：视角一分母（Source Code 总行数）", val("Source Code 总行数"), 65);
+  eq("汇总：视角一空值", val("Parent ID 为空"), 3);
+  eq("汇总：视角一占比 3/65", val("空值占比"), "4.6%");
   eq("汇总：视角二分母（Requirement 条数）", val("Requirement 总条数"), 271);
   eq("汇总：视角二遗漏", val("未被引用"), 0);
   eq("汇总：视角二占比", val("遗漏占比"), "0.0%");
   ok(
     "汇总：结论行含两视角数字",
-    String(val("结论")).includes("视角一空值 46 行（Function 章 0 行）") &&
+    String(val("结论")).includes("视角一空值 3 行（Function 章 0 行）") &&
       String(val("结论")).includes("视角二遗漏 0 条")
   );
-  ok("汇总：按数据章节逐章列出", sum.some((r) => r[0] === "Type Definition 章"));
+  ok("汇总：按数据章节逐章列出", sum.some((r) => r[0] === "Global Variable Definition 章"));
+  ok("汇总：Type 章已退出 Source Code 口径", !sum.some((r) => r[0] === "Type Definition 章"));
   ok("汇总：无列映射提示时给（无）", val("列映射提示") === "（无）");
-  // 代码侧明细：全量 46 行，不截断；列与生成文档页序号列对齐
-  eq("代码侧明细行数（全量）", codeDet.length - 1, 46);
+  // 代码侧明细：全量 3 行（globals 结构性空值），不截断；列与生成文档页序号列对齐
+  eq("代码侧明细行数（全量）", codeDet.length - 1, 3);
   eq("代码侧明细表头", codeDet[0], ["数据章节", "符号名", "文档序号"]);
-  ok("代码侧明细首行来自 Type 章", String(codeDet[1][0]).startsWith("Type Definition 章"));
+  ok("代码侧明细首行来自 Global 章", String(codeDet[1][0]).startsWith("Global Variable Definition 章"));
   // 需求侧明细：真实数据零遗漏 → 占位行
   eq("需求侧明细：零遗漏时占位行", reqDet[1][0], "（无未被引用的 Requirement）");
 
@@ -436,7 +442,7 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   const back = XLSX.read(buf, { type: "buffer" });
   eq("写盘后读回 sheet 一致", back.SheetNames, wb.SheetNames);
   const backSum = XLSX.utils.sheet_to_json(back.Sheets["校验汇总"], { header: 1, defval: "" });
-  eq("读回：视角一空值", backSum.find((r) => r[0] === "Parent ID 为空")[1], 46);
+  eq("读回：视角一空值", backSum.find((r) => r[0] === "Parent ID 为空")[1], 3);
 }
 
 console.log("");

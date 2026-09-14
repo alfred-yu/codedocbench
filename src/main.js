@@ -1390,7 +1390,8 @@ function collectDocRows(nodes, nums, fnIndex) {
         const names = dataSectionNames(parseCache.get(node.path)?.data, sec.isData);
         const fromSource = names.length > 0;
         const items = fromSource ? names : ["N/A"];
-        // 数据行：不参与编号；内容来自源码解析 → Source Code，解析不到（N/A 占位）→ Comment
+        // 数据行：不参与编号。Object Type 口径：仅全局变量与函数章视为 Source Code，
+        // 其余数据章（Type / Macro / Constant）即使解析自源码也按 Comment 处理；N/A 占位恒为 Comment
         for (const it of items) {
           let rowParent = "";
           if (sec.isData === "functions" && fromSource && fnIndex) {
@@ -1400,7 +1401,10 @@ function collectDocRows(nodes, nums, fnIndex) {
           rows.push({
             num: "",
             title: it,
-            objectType: fromSource ? "Source Code" : "Comment",
+            objectType:
+              fromSource && (sec.isData === "globals" || sec.isData === "functions")
+                ? "Source Code"
+                : "Comment",
             parent: rowParent,
             // 一致性校验按数据章节分组统计空 Parent ID，需带上归属（导出/链接表只取前 4 个字段，不受影响）
             sectionKey: sec.isData,
