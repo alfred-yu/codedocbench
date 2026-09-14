@@ -88,15 +88,16 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
     sourceTotal += 1;
     const key = row.sectionKey || "(未分章)";
     if (!sectionMap.has(key)) {
-      sectionMap.set(key, { key, title: row.sectionTitle || key, total: 0, empty: 0, samples: [] });
+      sectionMap.set(key, { key, title: row.sectionTitle || key, total: 0, empty: 0, details: [] });
     }
     const g = sectionMap.get(key);
     g.total += 1;
     if (norm(row.parent)) return;
     g.empty += 1;
     emptyParent += 1;
-    // 序号与生成文档页「序号」列、链接文件「链出 ID」同一坐标系，便于回表定位
-    if (g.samples.length < TRACE_SAMPLE_LIMIT) g.samples.push({ index: i + 1, title: row.title });
+    // 序号与生成文档页「序号」列、链接文件「链出 ID」同一坐标系，便于回表定位。
+    // 全量保留（报告是导出文件，不进 DOM，无需截断）
+    g.details.push({ index: i + 1, title: row.title });
   });
 
   /* ---------- 代码文档的 Parent ID 全集（需求侧反向核对的数据源） ---------- */
@@ -186,4 +187,100 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
     },
     extra: { dangling, duplicated, nonRequirementRefs },
   };
+}
+
+/* ---------- 报告导出：把核对结果编成 Excel 工作簿 ----------
+   三个 sheet：校验汇总（两视角统计 + 占比 + 附带核对 + 结论）/
+   代码侧-ParentID空值（章节 · 符号名 · 文档序号）/
+   需求侧-未被引用（需求 ID · 需求内容 · 所属需求块 · 低层需求行号）。
+   明细全量列出 —— 报告是导出文件，不是 DOM，不设条数上限。 */
+
+function pct(r) {
+  return r == null ? "—" : `${(r * 100).toFixed(1)}%`;
+}
+
+/* 纯数据：返回 [{ name, aoa, cols }]，不碰 XLSX，可直接断言 */
+export function buildTraceReportSheets(report, meta = {}) {
+  const { code, requirement, extra, typeMapped, colMissing } = report;
+
+  const notes = [];
+  if (colMissing.id) notes.push("未映射「ID 列」，无法生成 Parent ID");
+  if (colMissing.content) notes.push("未映射「需求内容列」，无法定位需求行");
+  if (!typeMapped) notes.push("未映射「Object Type 列」，需求侧校验退化为「所有带 ID 的行」");
+  else if (colMissing.chapter) notes.push("未映射「章节列」，需求块边界可能不准确");
+
+  const fn = code.sections.find((s) => s.key === "functions");
+  const conclusion =
+    `视角一空值 ${code.emptyParent} 行（Function 章 ${fn ? fn.empty : 0} 行）；` +
+    `视角二遗漏 ${requirement.orphaned} 条；附带核对 ${
+      extra.dangling.length + extra.duplicated.length + extra.nonRequirementRefs.length
+    } 项`;
+
+  const summary = [
+    ["一致性检查报告", ""],
+    ["生成时间", meta.generatedAt || ""],
+    [],
+    ["视角一 · 代码文档", "Object Type = Source Code 的行中，Parent ID 为空的情况（占比分母 = Source Code 行数）"],
+    ["Source Code 总行数", code.sourceTotal],
+    ["Parent ID 为空", code.emptyParent],
+    ["空值占比", pct(code.emptyRatio)],
+    [],
+    ["按数据章节", ""],
+    ["数据章节", "总行数", "空值数", "空值占比"],
+    ...code.sections.map((s) => [`${s.title} 章`, s.total, s.empty, pct(s.emptyRatio)]),
+    [],
+    ["视角二 · 低层需求", "Object Type = Requirement 的需求中，ID 未被代码文档 Parent ID 引用的情况（占比分母 = Requirement 条数）"],
+    ["Requirement 总条数", requirement.total],
+    ["未被引用", requirement.orphaned],
+    ["遗漏占比", pct(requirement.orphanRatio)],
+    [],
+    ["附带核对", ""],
+    ["悬空引用（Parent ID 指向不存在的需求 ID）", extra.dangling.length],
+    ["重复追溯（同一条需求被多个符号引用）", extra.duplicated.length],
+    ["口径差异（Parent ID 引用了非 Requirement 行）", extra.nonRequirementRefs.length],
+    [],
+    ["列映射提示", notes.join("；") || "（无）"],
+    ["结论", conclusion],
+  ];
+
+  const codeDetail = [["数据章节", "符号名", "文档序号"]];
+  for (const s of code.sections)
+    for (const d of s.details) codeDetail.push([`${s.title} 章`, d.title, d.index]);
+  if (codeDetail.length === 1) codeDetail.push(["（无空 Parent ID 的 Source Code 行）", "", ""]);
+
+  const reqDetail = [["需求 ID", "需求内容", "所属需求块", "低层需求行号"]];
+  for (const o of requirement.orphans)
+    reqDetail.push([
+      o.id,
+      o.content || "（需求内容为空）",
+      o.block || "（未归属任何需求块）",
+      o.line,
+    ]);
+  if (reqDetail.length === 1) reqDetail.push(["（无未被引用的 Requirement）", "", "", ""]);
+
+  return [
+    { name: "校验汇总", aoa: summary, cols: [{ wch: 46 }, { wch: 18 }, { wch: 12 }, { wch: 12 }] },
+    { name: "代码侧-ParentID空值", aoa: codeDetail, cols: [{ wch: 28 }, { wch: 44 }, { wch: 12 }] },
+    { name: "需求侧-未被引用", aoa: reqDetail, cols: [{ wch: 24 }, { wch: 64 }, { wch: 30 }, { wch: 14 }] },
+  ];
+}
+
+/* 编码为工作簿：XLSX 由调用方注入（与 encodeLinkSheet 同款做法，纯模块不硬依赖 xlsx）。
+   加粗规则：各 sheet 首行 + 汇总页的分组标题行（视角一/视角二/按数据章节/附带核对） */
+export function encodeTraceWorkbook(report, XLSX, meta = {}) {
+  const wb = XLSX.utils.book_new();
+  for (const { name, aoa, cols } of buildTraceReportSheets(report, meta)) {
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = cols;
+    aoa.forEach((row, r) => {
+      const head = String(row[0] ?? "");
+      if (r !== 0 && !/^(视角[一二]|按数据章节|附带核对)/.test(head)) return;
+      for (let c = 0; c < row.length; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        if (cell) cell.s = { font: { bold: true } };
+      }
+    });
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  }
+  return wb;
 }

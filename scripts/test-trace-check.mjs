@@ -1,6 +1,6 @@
 // 一致性校验模块（src/trace-check.js）回归测试
 //   覆盖：① 空 Parent ID 按章节分组 ② Requirement 反向覆盖 ③ 悬空引用 / 重复追溯 /
-//         口径差异 ④ 列映射缺失降级 ⑤ 真实项目数据端到端 ⑥ 灵敏度注入
+//         口径差异 ④ 列映射缺失降级 ⑤ 真实项目数据端到端 ⑥ 灵敏度注入 ⑦ 报告导出
 // 纯 Node 运行，不依赖 DOM / Tauri：npm run test:trace-check
 import fs from "fs";
 import path from "path";
@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const XLSX = require("xlsx-js-style");
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const { auditTrace, scanRequirementBlocks, TRACE_SAMPLE_LIMIT } = await import(
+const { auditTrace, scanRequirementBlocks, buildTraceReportSheets, encodeTraceWorkbook } = await import(
   "file:///" + path.join(ROOT, "src", "trace-check.js").replace(/\\/g, "/")
 );
 
@@ -51,8 +51,8 @@ console.log("[1/6] 代码侧：Source Code 行的 Parent ID 空值分组");
   eq("分组数（按 sectionKey 合并）", r.code.sections.length, 2);
   const fn = r.code.sections.find((s) => s.key === "functions");
   eq("Function 章 总/空", [fn.total, fn.empty], [2, 1]);
-  eq("Function 章 明细序号（对齐生成文档页序号列）", fn.samples.map((x) => x.index), [4]);
-  eq("Function 章 明细符号名", fn.samples.map((x) => x.title), ["fnB"]);
+  eq("Function 章 明细序号（对齐生成文档页序号列）", fn.details.map((x) => x.index), [4]);
+  eq("Function 章 明细符号名", fn.details.map((x) => x.title), ["fnB"]);
   const ty = r.code.sections.find((s) => s.key === "types");
   eq("Type 章 总/空", [ty.total, ty.empty], [2, 2]);
   eq("Type 章 章节标题", ty.title, "Type Definition");
@@ -251,6 +251,7 @@ function buildIndex(llrRows, fnNames) {
 
 /* ============ 第 5 节：真实项目数据端到端 ============ */
 console.log("[5/6] 真实项目数据（demo/mock.js 内嵌 PDTManager）");
+let realReport = null; // 供第 7 节报告导出断言复用
 const realLlr = XLSX.utils.sheet_to_json(
   XLSX.read(Buffer.from(grab("LLR_B64").replace(/\s/g, ""), "base64"), { type: "buffer" }).Sheets["LLR"],
   { defval: "" }
@@ -264,6 +265,7 @@ const realLlr = XLSX.utils.sheet_to_json(
   const uniq = [...new Set(fnNames)];
   const rows = buildRealRows(buildIndex(realLlr, uniq));
   const r = auditTrace({ rows, llrRows: realLlr, colMap: COL, nameSet: new Set(uniq) });
+  realReport = r;
 
   eq("真实数据：Source Code 行数（不含 N/A 占位行）", r.code.sourceTotal, 108);
   eq("真实数据：空 Parent ID 行数", r.code.emptyParent, 46);
@@ -319,8 +321,8 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
     ok("删掉整块需求行 → Function 章出现空值", fnSection.empty > 0, fnSection.empty);
     ok(
       "删掉整块需求行 → 空值明细为该函数",
-      fnSection.samples.some((s) => s.title === uniq[0]),
-      fnSection.samples.map((s) => s.title)
+      fnSection.details.some((s) => s.title === uniq[0]),
+      fnSection.details.map((s) => s.title)
     );
   }
 
@@ -360,20 +362,81 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
     ok("需求 ID 整体改号 → Requirement 全部未被引用", r.requirement.orphaned === r.requirement.total);
   }
 
-  // 缺陷 E：明细截断上限（保证大结果集不会无限增长）
+  // 缺陷 E：明细全量列出（报告是导出文件，不截断；任何上限回潮都会在这里翻车）
   {
-    const rows = Array.from({ length: TRACE_SAMPLE_LIMIT + 7 }, () => ({
+    const N = 257;
+    const rows = Array.from({ length: N }, (_, i) => ({
       num: "",
-      title: "sym",
+      title: "sym_" + i,
       objectType: "Source Code",
       parent: "",
       sectionKey: "types",
       sectionTitle: "Type Definition",
     }));
     const r = auditTrace({ rows, llrRows: EMPTY_LLR, colMap: COL, nameSet: new Set() });
-    eq("明细截断到上限", r.code.sections[0].samples.length, TRACE_SAMPLE_LIMIT);
-    eq("计数不受截断影响", r.code.emptyParent, TRACE_SAMPLE_LIMIT + 7);
+    eq("明细全量列出（不截断）", r.code.sections[0].details.length, N);
+    eq("计数与明细一致", r.code.emptyParent, N);
+    eq("明细序号对齐文档序号列（末条 = N）", r.code.sections[0].details[N - 1].index, N);
   }
+}
+
+/* ============ 第 7 节：报告导出（buildTraceReportSheets / encodeTraceWorkbook） ============ */
+console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
+{
+  const sheets = buildTraceReportSheets(realReport, { generatedAt: "2026-09-15 00:00" });
+  eq("报告 sheet 名称", sheets.map((s) => s.name), ["校验汇总", "代码侧-ParentID空值", "需求侧-未被引用"]);
+  const [sum, codeDet, reqDet] = sheets.map((s) => s.aoa);
+  const val = (label) => {
+    const row = sum.find((r) => r[0] === label);
+    return row ? row[1] : undefined;
+  };
+  // 汇总页：真实数据的两视角数字（与第 5 节断言同一坐标系）
+  eq("汇总：生成时间写入", val("生成时间"), "2026-09-15 00:00");
+  eq("汇总：视角一分母（Source Code 总行数）", val("Source Code 总行数"), 108);
+  eq("汇总：视角一空值", val("Parent ID 为空"), 46);
+  eq("汇总：视角一占比 46/108", val("空值占比"), "42.6%");
+  eq("汇总：视角二分母（Requirement 条数）", val("Requirement 总条数"), 271);
+  eq("汇总：视角二遗漏", val("未被引用"), 0);
+  eq("汇总：视角二占比", val("遗漏占比"), "0.0%");
+  ok(
+    "汇总：结论行含两视角数字",
+    String(val("结论")).includes("视角一空值 46 行（Function 章 0 行）") &&
+      String(val("结论")).includes("视角二遗漏 0 条")
+  );
+  ok("汇总：按数据章节逐章列出", sum.some((r) => r[0] === "Type Definition 章"));
+  ok("汇总：无列映射提示时给（无）", val("列映射提示") === "（无）");
+  // 代码侧明细：全量 46 行，不截断；列与生成文档页序号列对齐
+  eq("代码侧明细行数（全量）", codeDet.length - 1, 46);
+  eq("代码侧明细表头", codeDet[0], ["数据章节", "符号名", "文档序号"]);
+  ok("代码侧明细首行来自 Type 章", String(codeDet[1][0]).startsWith("Type Definition 章"));
+  // 需求侧明细：真实数据零遗漏 → 占位行
+  eq("需求侧明细：零遗漏时占位行", reqDet[1][0], "（无未被引用的 Requirement）");
+
+  // 有孤儿的数据上：逐条 ID / 内容 / 所属块 / 行号
+  const llr7 = [
+    { "Requirement ID": "R_9", "Title / Requirement Text": "orphan text", Type: "Requirement", Section: "" },
+  ];
+  const rows7 = [
+    { num: "", title: "fnA", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "Function Definition" },
+  ];
+  const rep7 = auditTrace({ rows: rows7, llrRows: llr7, colMap: COL, nameSet: new Set() });
+  const req7 = buildTraceReportSheets(rep7).find((s) => s.name === "需求侧-未被引用").aoa;
+  eq("孤儿明细：ID", req7[1][0], "R_9");
+  eq("孤儿明细：内容", req7[1][1], "orphan text");
+  ok("孤儿明细：未归属块时给占位", String(req7[1][2]).includes("未归属"));
+  eq("孤儿明细：低层需求行号", req7[1][3], 1);
+
+  // 工作簿编码：sheet 顺序 + 表头加粗 + 写盘读回一致
+  const wb = encodeTraceWorkbook(realReport, XLSX, { generatedAt: "2026-09-15 00:00" });
+  eq("工作簿 sheet 顺序", wb.SheetNames, ["校验汇总", "代码侧-ParentID空值", "需求侧-未被引用"]);
+  const isBold = (cell) => !!(cell && cell.s && cell.s.font && cell.s.font.bold);
+  ok("明细页表头加粗", isBold(wb.Sheets["代码侧-ParentID空值"]["A1"]));
+  ok("汇总页视角标题行加粗", isBold(wb.Sheets["校验汇总"]["A4"]));
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+  const back = XLSX.read(buf, { type: "buffer" });
+  eq("写盘后读回 sheet 一致", back.SheetNames, wb.SheetNames);
+  const backSum = XLSX.utils.sheet_to_json(back.Sheets["校验汇总"], { header: 1, defval: "" });
+  eq("读回：视角一空值", backSum.find((r) => r[0] === "Parent ID 为空")[1], 46);
 }
 
 console.log("");

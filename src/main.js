@@ -10,8 +10,8 @@ import {
   encodeLinkSheet,
   stripIdPrefix,
 } from "./link-split.js";
-// 一致性校验：代码文档 ↔ 低层需求的双向追溯核对（纯逻辑，可脱离界面回归）
-import { auditTrace, TRACE_SAMPLE_LIMIT } from "./trace-check.js";
+// 一致性校验：代码文档 ↔ 低层需求的双向追溯核对 + 报告工作簿编码（纯逻辑，可脱离界面回归）
+import { auditTrace, encodeTraceWorkbook } from "./trace-check.js";
 
 // 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
 document.title = `CodeDocBench (Powered By 余绍健, v${__APP_VERSION__})`;
@@ -127,9 +127,6 @@ const genPanel = document.getElementById("gen-panel");
 const genStats = document.getElementById("gen-stats");
 const genPreview = document.getElementById("gen-preview");
 const genTraceBtn = document.getElementById("gen-trace-btn");
-const genTracePanel = document.getElementById("gen-trace-panel");
-const traceDialog = document.getElementById("trace-dialog");
-const traceDialogClose = document.getElementById("trace-dialog-close");
 const relPanel = document.getElementById("rel-panel");
 const linkPanel = document.getElementById("link-panel");
 
@@ -241,15 +238,7 @@ stepperEl.addEventListener("click", (e) => {
 });
 
 genRunBtn.addEventListener("click", () => exportDocExcel());
-genTraceBtn.addEventListener("click", () => runTraceAudit());
-traceDialogClose.addEventListener("click", () => closeTraceDialog());
-/* 点遮罩空白处关闭：仅当事件目标就是遮罩本身，避免点对话框内部也关掉 */
-traceDialog.addEventListener("click", (e) => {
-  if (e.target === traceDialog) closeTraceDialog();
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && isTraceDialogOpen()) closeTraceDialog();
-});
+genTraceBtn.addEventListener("click", () => exportTraceReport());
 
 docAddBtn.addEventListener("click", () => addDocNode());
 docRenameBtn.addEventListener("click", () => renameDocNode());
@@ -341,34 +330,18 @@ async function renderGenPreview() {
     `<div class="gen-preview-info">共 ${rows.length} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）</div>`;
 }
 
-/* ---- 一致性校验（步骤 4 主入口）：代码文档 ↔ 低层需求的双向追溯核对 ----
-   与「生成链接文件」同为显式触发：进入步骤 4 先清空上次结论，点击按钮才重新核对，
-   避免展示与当前文档树 / 低层需求不一致的过期结果。
-   结论以对话框展示（不占用生成文档页版面），判定逻辑全部在 src/trace-check.js（纯模块），
-   此处只负责取数、渲染与对话框开合 */
-function isTraceDialogOpen() {
-  return !traceDialog.classList.contains("hidden");
-}
-
-function openTraceDialog() {
-  traceDialog.classList.remove("hidden");
-}
-
-function closeTraceDialog() {
-  traceDialog.classList.add("hidden");
-}
-
-function resetTracePanel() {
-  closeTraceDialog(); // 结论依赖项目数据，作废时连对话框一并收起
-  genTracePanel.innerHTML = "";
-}
-
-async function runTraceAudit() {
+/* ---- 一致性检查报告导出（步骤 4 主入口）：代码文档 ↔ 低层需求的双向追溯核对 ----
+   与「生成并导出 Excel」同为显式触发：点击按钮才核对并导出。结果不再弹对话框展示，
+   而是导出 Excel 报告（校验汇总 / 代码侧-ParentID空值 / 需求侧-未被引用 三个 sheet，
+   明细全量不截断），导出后用 alert 给出两视角摘要。判定逻辑与工作簿编码全部在
+   src/trace-check.js（纯模块），此处只负责取数与写文件。校验随项目数据即时计算、
+   不持有结论状态，切换 / 关闭项目无需作废。 */
+async function exportTraceReport() {
   if (!docTree.length) {
     alert("文档目录树为空，请先添加章节");
     return;
   }
-  // 与导出同源：先确保已挂载源码的解析结果、低层需求均为最新
+  // 与文档导出同源：先确保已挂载源码的解析结果、低层需求均为最新
   await refreshAllFileData();
   await refreshLlrIfChanged();
 
@@ -385,7 +358,31 @@ async function runTraceAudit() {
     },
     nameSet: new Set(fnNames),
   });
-  renderTracePanel(report);
+
+  const wb = encodeTraceWorkbook(report, XLSX, { generatedAt: nowText() });
+  const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  const filePath = await save({
+    title: "导出一致性检查报告",
+    defaultPath: "一致性检查报告.xlsx",
+    filters: [{ name: "Excel 文件", extensions: ["xlsx"] }],
+  });
+  if (!filePath) return; // 用户取消
+
+  try {
+    await invoke("save_file", { path: filePath, data: Array.from(bytes) });
+    const { code, requirement } = report;
+    alert(
+      `已导出：${filePath}\n\n` +
+        `视角一 · 代码文档：Source Code ${code.sourceTotal} 行中 Parent ID 为空 ${code.emptyParent} 行（${formatRatio(code.emptyRatio)}）\n` +
+        `视角二 · 低层需求：Requirement ${requirement.total} 条中未被引用 ${requirement.orphaned} 条（${formatRatio(requirement.orphanRatio)}）`
+    );
+  } catch (err) {
+    alert(`导出失败：${err}`);
+  }
 }
 
 /* 占比文案：数值由 src/trace-check.js 算好（分母为 0 时为 null），此处只格式化 */
@@ -393,124 +390,11 @@ function formatRatio(r) {
   return r == null ? "—" : `${(r * 100).toFixed(1)}%`;
 }
 
-/* 渲染分两个视角，与余工提的两个问题一一对应：
-   视角一（代码文档）：Object Type = Source Code 的行里，哪些 Parent ID 为空、占比多少
-   视角二（低层需求）：Object Type = Requirement 的需求里，哪些 ID 未被代码文档引用、占比多少、ID 与内容分别是什么 */
-function renderTracePanel(report) {
-  const { code, requirement, extra, typeMapped, colMissing } = report;
-  const mark = (n) => (n ? "warn" : "ok");
-  const codeRatio = formatRatio(code.emptyRatio);
-  const reqRatio = formatRatio(requirement.orphanRatio);
-
-  // 吸顶汇总：两个视角各占一行，给出「分母 · 命中 · 占比」
-  const stats = [
-    `<span class="trace-stat">视角一 · 代码文档：Source Code <b>${code.sourceTotal}</b> 行中，Parent ID 为空 <b class="${mark(
-      code.emptyParent
-    )}">${code.emptyParent}</b> 行（<b class="${mark(code.emptyParent)}">${codeRatio}</b>）</span>`,
-    `<span class="trace-stat">视角二 · 低层需求：Requirement <b>${requirement.total}</b> 条中，未被代码文档引用 <b class="${mark(
-      requirement.orphaned
-    )}">${requirement.orphaned}</b> 条（<b class="${mark(requirement.orphaned)}">${reqRatio}</b>）</span>`,
-  ].join("");
-
-  // ---- 视角一明细：按数据章节分组，有问题的章节默认展开（余工要看「哪些」），无问题的收起 ----
-  const sectionGroups = code.sections
-    .map((s) => {
-      const body = s.empty
-        ? `<ul class="trace-list">${s.samples
-            .map(
-              (x) =>
-                `<li><span class="trace-idx">#${x.index}</span><span class="trace-name">${escapeHtml(
-                  x.title
-                )}</span></li>`
-            )
-            .join("")}</ul>` +
-          (s.empty > s.samples.length
-            ? `<p class="trace-more">仅列出前 ${s.samples.length} 行，其余 ${
-                s.empty - s.samples.length
-              } 行的序号见生成文档页</p>`
-            : "")
-        : '<p class="trace-ok">该章节 Source Code 行的 Parent ID 均非空</p>';
-      return (
-        `<details class="trace-group"${s.empty ? " open" : ""}><summary>` +
-        `<span class="trace-group-name">${escapeHtml(s.title)} 章</span>` +
-        `<span class="trace-group-count ${mark(s.empty)}">空 ${s.empty} / 总 ${
-          s.total
-        } · ${formatRatio(s.emptyRatio)}</span>` +
-        `</summary>${body}</details>`
-      );
-    })
-    .join("");
-
-  // ---- 视角二明细：逐条给出需求 ID 与需求内容（全部列出，不截断） ----
-  const orphanBody = requirement.orphaned
-    ? `<ul class="trace-orphan-list">${requirement.orphans
-        .map((o) => {
-          const where = [
-            o.block ? `所属需求块 ${escapeHtml(o.block)}` : "未归属任何需求块",
-            `低层需求第 ${o.line} 行`,
-          ].join(" · ");
-          return (
-            `<li><span class="trace-orphan-id">${escapeHtml(o.id)}</span>` +
-            `<span class="trace-orphan-text">${escapeHtml(o.content || "（需求内容为空）")}` +
-            `<small>${where}</small></span></li>`
-          );
-        })
-        .join("")}</ul>`
-    : '<p class="trace-ok">低层需求中所有 Requirement 的 ID 均已被代码文档的 Parent ID 引用，无遗漏。</p>';
-
-  const orphanGroup = requirement.orphaned
-    ? `<details class="trace-group" open><summary>` +
-      `<span class="trace-group-name">未被引用的 Requirement</span>` +
-      `<span class="trace-group-count warn">${requirement.orphaned} 条 · ${reqRatio}</span>` +
-      `</summary>${orphanBody}</details>`
-    : orphanBody;
-
-  // 附带核对：悬空引用 / 重复追溯 / 口径差异
-  const extras = [];
-  if (extra.dangling.length)
-    extras.push(
-      `Parent ID 指向不存在的需求 ID：${extra.dangling.length} 处（如 ${escapeHtml(
-        extra.dangling[0].id
-      )}）`
-    );
-  if (extra.duplicated.length)
-    extras.push(`同一条需求被多个符号引用：${extra.duplicated.length} 条`);
-  if (extra.nonRequirementRefs.length)
-    extras.push(
-      `Parent ID 引用了非 Requirement 行的 ID：${extra.nonRequirementRefs.length} 个`
-    );
-
-  const notes = [];
-  if (colMissing.id) notes.push("未映射「ID 列」，无法生成 Parent ID");
-  if (colMissing.content) notes.push("未映射「需求内容列」，无法定位需求行");
-  if (!typeMapped) notes.push("未映射「Object Type 列」，需求侧校验退化为「所有带 ID 的行」");
-  else if (colMissing.chapter) notes.push("未映射「章节列」，需求块边界可能不准确");
-
-  genTracePanel.innerHTML =
-    `<div class="trace-head">${stats}` +
-    (extras.length ? `<span class="trace-stat warn">${extras.join("；")}</span>` : "") +
-    `</div>` +
-    `<div class="trace-groups">` +
-    `<div class="trace-perspective">` +
-    `<div class="trace-perspective-head">` +
-    `<span class="trace-perspective-title">视角一 · 代码文档</span>` +
-    `<span class="trace-perspective-desc">Object Type = <b>Source Code</b> 的行，其 Parent ID 为空的情况；占比分母为 Source Code 行数（${code.sourceTotal}）</span>` +
-    `</div>` +
-    `<p class="trace-hint">Parent ID 按设计只在 Function Definition 章填充，其余数据章节（Type / Global Variable / Macro / Constant Definition）恒为空 —— 属结构性事实而非数据缺陷，故按章节分组呈现。</p>` +
-    sectionGroups +
-    `</div>` +
-    `<div class="trace-perspective">` +
-    `<div class="trace-perspective-head">` +
-    `<span class="trace-perspective-title">视角二 · 低层需求</span>` +
-    `<span class="trace-perspective-desc">Object Type = <b>Requirement</b> 的需求中，ID 未被代码文档 Parent ID 引用的情况；占比分母为 Requirement 条数（${requirement.total}）</span>` +
-    `</div>` +
-    orphanGroup +
-    `</div>` +
-    `</div>` +
-    (notes.length
-      ? `<div class="trace-notes">${notes.map((n) => `<span>⚠ ${escapeHtml(n)}</span>`).join("")}</div>`
-      : "");
-  openTraceDialog();
+/* 报告页眉用的生成时刻（本地时间，精确到分钟） */
+function nowText() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /* ---- 低层需求 Excel 加载与列选择 ---- */
@@ -653,7 +537,6 @@ function closeProject() {
   mountSelection.clear();
   resetLlrState();
   resetLinkGeneration(); // 与低层需求同步复位：关闭项目后步骤 5 回到未生成状态
-  resetTracePanel(); // 校验结论依赖项目数据，关闭项目后一并清空
   try {
     // 仅清除"上次项目"指针；文档树在项目目录的 .codedocbench.json 中保留，
     // 重新打开同一项目时自动恢复
@@ -956,7 +839,6 @@ async function loadDocTree() {
   restoreLlr(savedLlr);
   restoreLink(savedLink);
   resetLinkGeneration();
-  resetTracePanel(); // 项目数据已换成新的一份，上次核对结论作废
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */

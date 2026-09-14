@@ -171,9 +171,9 @@
         <div class="gen-card">
           <div class="gen-toolbar">
             <div id="gen-stats" class="gen-stats"></div>
-            <button id="gen-trace-btn" class="btn btn-secondary" type="button" title="核对代码文档与低层需求的双向追溯覆盖">
+            <button id="gen-trace-btn" class="btn btn-secondary" type="button" title="核对代码文档与低层需求的双向追溯覆盖，并导出检查报告（Excel，含两视角统计与全量明细）">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="m9 11 2 2 4-4"/></svg>
-              <span>一致性校验</span>
+              <span>导出检查报告</span>
             </button>
             <button id="gen-run-btn" class="btn btn-primary" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
@@ -244,19 +244,6 @@
       <span id="status" class="status"></span>
       <span id="sb-project" class="sb-project"></span>
     </footer>
-
-    <!-- 一致性校验结果对话框：结果不占用生成文档页版面，长列表在对话框内滚动 -->
-    <div id="trace-dialog" class="dialog-overlay hidden">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="trace-dialog-title">
-        <div class="dialog-head">
-          <span id="trace-dialog-title" class="dialog-title">一致性校验</span>
-          <button id="trace-dialog-close" class="dialog-close" type="button" title="关闭（Esc）" aria-label="关闭">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-        <div id="gen-trace-panel" class="trace-panel"></div>
-      </div>
-    </div>
 
     <!-- 浏览器演示模式：无 Tauri 环境时注入模拟后端（桌面运行时自动失效） -->
     <script src="/demo/mock.js"></script>
