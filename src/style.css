@@ -426,30 +426,93 @@ body {
   color: var(--faint);
 }
 
-/* ---- 一致性校验面板（步骤 4）----
+/* ---- 一致性校验对话框（步骤 4）----
+   结论以模态展示：不占用生成文档页版面，长列表在对话框内滚动；
    按数据章节分组折叠：摘要行给「空 N / 总 M」，展开才列明细，避免结构性空值淹没真实缺口 */
-#gen-trace-panel {
-  flex: none;
-  margin-top: 12px;
-  max-height: 40vh;
-  overflow: auto;
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 34px 20px;
+  background: rgba(16, 24, 40, 0.38);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: 100%;
+  overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-md);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 11px 12px 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dialog-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.dialog-close:hover {
+  background: #eef1f6;
+  color: var(--text);
+}
+
+.dialog-close svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+#gen-trace-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   background: var(--panel-soft);
 }
 
+/* 统计行吸顶：列表滚动时总体结论始终可见 */
 .trace-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 18px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-}
-
-.trace-title {
-  font-weight: 600;
-  color: var(--text);
+  background: var(--panel-soft);
 }
 
 .trace-stat {

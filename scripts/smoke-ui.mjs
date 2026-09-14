@@ -62,12 +62,14 @@ const selectorRegistry = new Map();
 /* 元素 stub：记录 addEventListener，便于测试主动触发点击 */
 function makeEl(id) {
   const listeners = {};
+  const classOps = []; // classList.add/remove 调用流水，用于断言对话框的开合
   const state = { id, textContent: "", innerHTML: "", className: "", value: "", disabled: false, options: [] };
   return new Proxy(function () {}, {
     get(t, k) {
       if (k === "addEventListener")
         return (type, fn) => (listeners[type] || (listeners[type] = [])).push(fn);
       if (k === "__listeners") return listeners;
+      if (k === "__classOps") return classOps;
       if (k === "querySelector")
         return (sel) => {
           const key = id + " >> " + sel;
@@ -75,7 +77,13 @@ function makeEl(id) {
           return selectorRegistry.get(key);
         };
       if (k === "style") return styleStub();
-      if (k === "classList") return { add() {}, remove() {}, toggle() {}, contains: () => false };
+      if (k === "classList")
+        return {
+          add: (c) => classOps.push(["add", c]),
+          remove: (c) => classOps.push(["remove", c]),
+          toggle: (c) => classOps.push(["toggle", c]),
+          contains: () => false,
+        };
       if (k === "dataset") return {};
       if (k === "children" || k === "childNodes") return [];
       if (k === "parentNode" || k === "parentElement") return null;
@@ -380,8 +388,14 @@ if (previewHtml.includes("PDTMGR_LL_R_")) fail.push("预览中的链入 ID 仍�
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
-console.log("[6/7] 一致性校验：按钮触发 + 面板渲染（步骤 4 主入口）");
+console.log("[6/7] 一致性校验：按钮触发 + 对话框展示（步骤 4 主入口）");
 {
+  // DOM stub 的 getElementById 永远返回对象，标记丢失不会暴露；故直接核对构建产物里的节点
+  const distHtml = fs.readFileSync(path.join(ROOT, "dist", "index.html"), "utf8");
+  for (const id of ["gen-trace-btn", "trace-dialog", "trace-dialog-close", "gen-trace-panel"])
+    if (!distHtml.includes(`id="${id}"`)) fail.push(`dist/index.html 缺少 #${id}（运行时 getElementById 会取到 null）`);
+
+  const dialogOps = () => (registry.get("trace-dialog").__classOps || []).map((o) => o.join(":"));
   const wMark = writes.length;
   const bound = clickBtn("gen-trace-btn");
   await settle(400);
@@ -389,7 +403,10 @@ console.log("[6/7] 一致性校验：按钮触发 + 面板渲染（步骤 4 主�
   const panelHtml =
     writes.slice(wMark).filter((w) => w.id === "gen-trace-panel").map((w) => w.value).pop() || "";
   console.log("  面板:", panelHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 140));
-  if (!panelHtml) fail.push("点击一致性校验后面板无内容");
+  if (!panelHtml) fail.push("点击一致性校验后对话框无内容");
+  // 结论以对话框展示：点击按钮必须打开对话框（#trace-dialog 去掉 hidden）
+  if (!dialogOps().includes("remove:hidden"))
+    fail.push("点击一致性校验后对话框未打开：" + JSON.stringify(dialogOps()));
   // 120 个函数全部关联到需求、每条需求均被引用 → 两侧都应为 0 问题
   if (!/Source Code <b>120<\/b> 行 · Parent ID 为空 <b class="ok">0<\/b>/.test(panelHtml))
     fail.push("代码侧统计不符（应 Source Code 120 行、空 0）：" + panelHtml.slice(0, 180));
@@ -401,6 +418,16 @@ console.log("[6/7] 一致性校验：按钮触发 + 面板渲染（步骤 4 主�
     fail.push("章节摘要未给出「空 N / 总 M」：" + panelHtml.slice(0, 200));
   if (!panelHtml.includes("全部行均已关联需求") && !panelHtml.includes("均已被代码文档引用"))
     fail.push("零问题分组未给出通过文案");
+  // 对话框标题栏不应再重复面板内的标题（标题由 dialog-head 承担）
+  if (panelHtml.includes("trace-title")) fail.push("面板内残留重复标题 trace-title");
+
+  // 关闭：点关闭按钮应收起对话框
+  const closeBound = clickBtn("trace-dialog-close");
+  await settle(60);
+  if (!closeBound) fail.push("trace-dialog-close 未绑定 click");
+  if (!dialogOps().includes("add:hidden"))
+    fail.push("点关闭后对话框未收起：" + JSON.stringify(dialogOps()));
+  console.log("  #trace-dialog classList 操作:", JSON.stringify(dialogOps()));
 }
 
 console.log("[7/7] 错误文案 / 未处理异常");

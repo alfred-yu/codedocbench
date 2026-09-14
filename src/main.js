@@ -128,6 +128,8 @@ const genStats = document.getElementById("gen-stats");
 const genPreview = document.getElementById("gen-preview");
 const genTraceBtn = document.getElementById("gen-trace-btn");
 const genTracePanel = document.getElementById("gen-trace-panel");
+const traceDialog = document.getElementById("trace-dialog");
+const traceDialogClose = document.getElementById("trace-dialog-close");
 const relPanel = document.getElementById("rel-panel");
 const linkPanel = document.getElementById("link-panel");
 
@@ -240,6 +242,14 @@ stepperEl.addEventListener("click", (e) => {
 
 genRunBtn.addEventListener("click", () => exportDocExcel());
 genTraceBtn.addEventListener("click", () => runTraceAudit());
+traceDialogClose.addEventListener("click", () => closeTraceDialog());
+/* 点遮罩空白处关闭：仅当事件目标就是遮罩本身，避免点对话框内部也关掉 */
+traceDialog.addEventListener("click", (e) => {
+  if (e.target === traceDialog) closeTraceDialog();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && isTraceDialogOpen()) closeTraceDialog();
+});
 
 docAddBtn.addEventListener("click", () => addDocNode());
 docRenameBtn.addEventListener("click", () => renameDocNode());
@@ -334,10 +344,23 @@ async function renderGenPreview() {
 /* ---- 一致性校验（步骤 4 主入口）：代码文档 ↔ 低层需求的双向追溯核对 ----
    与「生成链接文件」同为显式触发：进入步骤 4 先清空上次结论，点击按钮才重新核对，
    避免展示与当前文档树 / 低层需求不一致的过期结果。
-   判定逻辑全部在 src/trace-check.js（纯模块），此处只负责取数与渲染 */
+   结论以对话框展示（不占用生成文档页版面），判定逻辑全部在 src/trace-check.js（纯模块），
+   此处只负责取数、渲染与对话框开合 */
+function isTraceDialogOpen() {
+  return !traceDialog.classList.contains("hidden");
+}
+
+function openTraceDialog() {
+  traceDialog.classList.remove("hidden");
+}
+
+function closeTraceDialog() {
+  traceDialog.classList.add("hidden");
+}
+
 function resetTracePanel() {
+  closeTraceDialog(); // 结论依赖项目数据，作废时连对话框一并收起
   genTracePanel.innerHTML = "";
-  genTracePanel.classList.add("hidden");
 }
 
 async function runTraceAudit() {
@@ -449,14 +472,14 @@ function renderTracePanel(report) {
   else if (colMissing.chapter) notes.push("未映射「章节列」，需求块边界可能不准确");
 
   genTracePanel.innerHTML =
-    `<div class="trace-head"><span class="trace-title">一致性校验</span>${stats}` +
+    `<div class="trace-head">${stats}` +
     (extras.length ? `<span class="trace-stat warn">${extras.join("；")}</span>` : "") +
     `</div>` +
     `<div class="trace-groups">${sectionGroups}${orphanGroup}</div>` +
     (notes.length
       ? `<div class="trace-notes">${notes.map((n) => `<span>⚠ ${escapeHtml(n)}</span>`).join("")}</div>`
       : "");
-  genTracePanel.classList.remove("hidden");
+  openTraceDialog();
 }
 
 /* ---- 低层需求 Excel 加载与列选择 ---- */
