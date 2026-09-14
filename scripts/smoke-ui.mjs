@@ -160,6 +160,20 @@ for (let i = 1; i <= FUNC_COUNT; i++) {
   LLR_AOA.push(["", `4.2.4.1.${i}`, name, ""]); // 章节/函数名边界行
   LLR_AOA.push([`PDTMGR_LL_R_${i}`, "", `The ${name} function shall do its job.`, "Requirement"]);
 }
+/* 末尾额外追加一个「不属于任何已挂载函数」的需求块，块内放 55 条 Requirement：
+   这些 ID 不会出现在任何 Parent ID 中 → 视角二应逐条列出 55 条孤儿。
+   条数刻意 >50：这样才能锁住「孤儿清单全量列出、不截断」（上限 50 的老实现会在这条上翻车）。
+   函数名刻意不叫 fn_xxx，避免被文档树里的函数名匹配到而算作已关联。 */
+const ORPHAN_COUNT = 55;
+const ORPHAN_ID = (i) => `PDTMGR_LL_R_9${String(i).padStart(3, "0")}`;
+const ORPHAN_TEXT = "The fn_not_mounted function shall be traced nowhere.";
+LLR_AOA.push(["", "4.2.4.1.999", "fn_not_mounted", ""]);
+for (let i = 1; i <= ORPHAN_COUNT; i++) {
+  LLR_AOA.push([ORPHAN_ID(i), "", `${ORPHAN_TEXT} (#${i})`, "Requirement"]);
+}
+const REQ_TOTAL = FUNC_COUNT + ORPHAN_COUNT; // 175 条 Requirement（120 已关联 + 55 孤儿）
+const REQ_ORPHAN_RATIO = (ORPHAN_COUNT / REQ_TOTAL) * 100; // 31.4%
+const EXPECT_REQ_RATIO = REQ_ORPHAN_RATIO.toFixed(1) + "%";
 const LLR_BYTES = (() => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(LLR_AOA), "LLR");
@@ -407,18 +421,41 @@ console.log("[6/7] 一致性校验：按钮触发 + 对话框展示（步骤 4 �
   // 结论以对话框展示：点击按钮必须打开对话框（#trace-dialog 去掉 hidden）
   if (!dialogOps().includes("remove:hidden"))
     fail.push("点击一致性校验后对话框未打开：" + JSON.stringify(dialogOps()));
-  // 120 个函数全部关联到需求、每条需求均被引用 → 两侧都应为 0 问题
-  if (!/Source Code <b>120<\/b> 行 · Parent ID 为空 <b class="ok">0<\/b>/.test(panelHtml))
-    fail.push("代码侧统计不符（应 Source Code 120 行、空 0）：" + panelHtml.slice(0, 180));
-  if (!/Requirement <b>120<\/b> 行 · 未被引用 <b class="ok">0<\/b>/.test(panelHtml))
-    fail.push("需求侧统计不符（应 Requirement 120 行、未被引用 0）：" + panelHtml.slice(0, 180));
+  // 两个视角：代码文档 / 低层需求，各自给出「分母 · 命中 · 占比」
+  if (!/视角一 · 代码文档：Source Code <b>120<\/b> 行中，Parent ID 为空 <b class="ok">0<\/b> 行（<b class="ok">0\.0%<\/b>）/.test(panelHtml))
+    fail.push("视角一（代码文档）统计/占比不符：" + panelHtml.slice(0, 240));
+  // 标题断言必须锚到视角块本身：吸顶汇总行里也含「视角二 · 低层需求」字样，只查子串会漏检
+  if (!panelHtml.includes('<span class="trace-perspective-title">视角一 · 代码文档</span>')) fail.push("缺少视角一标题");
+  if (!panelHtml.includes('<span class="trace-perspective-title">视角二 · 低层需求</span>')) fail.push("缺少视角二标题");
+  if (!panelHtml.includes("占比分母为 Source Code 行数")) fail.push("视角一未说明占比分母");
+  if (!panelHtml.includes("占比分母为 Requirement 条数")) fail.push("视角二未说明占比分母");
   if (!panelHtml.includes("Function Definition 章")) fail.push("未按数据章节分组渲染");
-  if (!panelHtml.includes("未被引用的 Requirement")) fail.push("缺少需求侧分组");
-  if (!/trace-group-count ok">空 0 \/ 总 120/.test(panelHtml))
-    fail.push("章节摘要未给出「空 N / 总 M」：" + panelHtml.slice(0, 200));
-  if (!panelHtml.includes("全部行均已关联需求") && !panelHtml.includes("均已被代码文档引用"))
-    fail.push("零问题分组未给出通过文案");
-  // 对话框标题栏不应再重复面板内的标题（标题由 dialog-head 承担）
+  if (!/trace-group-count ok">空 0 \/ 总 120 · 0\.0%/.test(panelHtml))
+    fail.push("章节摘要未给出「空 N / 总 M · 占比」：" + panelHtml.slice(0, 240));
+  if (!panelHtml.includes("该章节 Source Code 行的 Parent ID 均非空"))
+    fail.push("零问题章节未给出通过文案");
+  if (!panelHtml.includes("trace-hint")) fail.push("缺少「Parent ID 仅函数章填充」的结构性说明");
+  // 视角二恰好 55 条孤儿 → 分组应存在、默认展开，并逐条给出全部需求 ID / 需求内容 / 所属块与行号
+  if (!panelHtml.includes(`视角二 · 低层需求：Requirement <b>${REQ_TOTAL}</b> 条中，未被代码文档引用 <b class="warn">${ORPHAN_COUNT}</b> 条（<b class="warn">${EXPECT_REQ_RATIO}</b>）`))
+    fail.push(`视角二（低层需求）统计/占比不符（应 ${REQ_TOTAL} 条中 ${ORPHAN_COUNT} 条未引用 = ${EXPECT_REQ_RATIO}）：` + panelHtml.slice(0, 300));
+  if (!panelHtml.includes('<details class="trace-group" open><summary><span class="trace-group-name">未被引用的 Requirement</span>'))
+    fail.push("视角二孤儿分组应存在且默认展开：" + panelHtml.slice(0, 300));
+  if (!panelHtml.includes(`<span class="trace-group-count warn">${ORPHAN_COUNT} 条 · ${EXPECT_REQ_RATIO}</span>`))
+    fail.push("孤儿分组摘要计数/占比不符：" + panelHtml.slice(0, 300));
+  // 清单必须全量列出（条数 > 50，任何截断都会在这里暴露）
+  const orphanLis = [...panelHtml.matchAll(/<li><span class="trace-orphan-id">/g)].length;
+  if (orphanLis !== ORPHAN_COUNT)
+    fail.push(`孤儿清单应逐条列出 ${ORPHAN_COUNT} 条，实际 ${orphanLis} 条（疑似被截断）`);
+  if (!panelHtml.includes(`<li><span class="trace-orphan-id">${ORPHAN_ID(1)}</span>`))
+    fail.push("孤儿清单未列出首条需求 ID：" + panelHtml.slice(0, 300));
+  if (!panelHtml.includes(`<li><span class="trace-orphan-id">${ORPHAN_ID(ORPHAN_COUNT)}</span>`))
+    fail.push(`孤儿清单未列出末条需求 ID（${ORPHAN_ID(ORPHAN_COUNT)}）—— 列表疑似被截断`);
+  if (!panelHtml.includes(`${ORPHAN_TEXT} (#1)`)) fail.push("孤儿清单未列出需求内容");
+  if (!/所属需求块 4\.2\.4\.1\.999 fn_not_mounted · 低层需求第 \d+ 行/.test(panelHtml))
+    fail.push("孤儿清单未标注所属需求块与行号");
+  // 本例 0 空值的章节不应默认展开（「有空值才展开」的反向断言）
+  if (/open><summary><span class="trace-group-name">Function Definition 章<\/span>/.test(panelHtml))
+    fail.push("零空值章节不应默认展开");
   if (panelHtml.includes("trace-title")) fail.push("面板内残留重复标题 trace-title");
 
   // 关闭：点关闭按钮应收起对话框

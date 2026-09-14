@@ -388,20 +388,31 @@ async function runTraceAudit() {
   renderTracePanel(report);
 }
 
+/* 占比文案：数值由 src/trace-check.js 算好（分母为 0 时为 null），此处只格式化 */
+function formatRatio(r) {
+  return r == null ? "—" : `${(r * 100).toFixed(1)}%`;
+}
+
+/* 渲染分两个视角，与余工提的两个问题一一对应：
+   视角一（代码文档）：Object Type = Source Code 的行里，哪些 Parent ID 为空、占比多少
+   视角二（低层需求）：Object Type = Requirement 的需求里，哪些 ID 未被代码文档引用、占比多少、ID 与内容分别是什么 */
 function renderTracePanel(report) {
   const { code, requirement, extra, typeMapped, colMissing } = report;
   const mark = (n) => (n ? "warn" : "ok");
+  const codeRatio = formatRatio(code.emptyRatio);
+  const reqRatio = formatRatio(requirement.orphanRatio);
 
+  // 吸顶汇总：两个视角各占一行，给出「分母 · 命中 · 占比」
   const stats = [
-    `<span class="trace-stat">Source Code <b>${code.sourceTotal}</b> 行 · Parent ID 为空 <b class="${mark(
+    `<span class="trace-stat">视角一 · 代码文档：Source Code <b>${code.sourceTotal}</b> 行中，Parent ID 为空 <b class="${mark(
       code.emptyParent
-    )}">${code.emptyParent}</b></span>`,
-    `<span class="trace-stat">Requirement <b>${requirement.total}</b> 行 · 未被引用 <b class="${mark(
+    )}">${code.emptyParent}</b> 行（<b class="${mark(code.emptyParent)}">${codeRatio}</b>）</span>`,
+    `<span class="trace-stat">视角二 · 低层需求：Requirement <b>${requirement.total}</b> 条中，未被代码文档引用 <b class="${mark(
       requirement.orphaned
-    )}">${requirement.orphaned}</b></span>`,
+    )}">${requirement.orphaned}</b> 条（<b class="${mark(requirement.orphaned)}">${reqRatio}</b>）</span>`,
   ].join("");
 
-  // ① 代码侧：按数据章节分组，默认全部折叠，摘要行给「空 N / 总 M」，展开看明细
+  // ---- 视角一明细：按数据章节分组，有问题的章节默认展开（余工要看「哪些」），无问题的收起 ----
   const sectionGroups = code.sections
     .map((s) => {
       const body = s.empty
@@ -418,37 +429,41 @@ function renderTracePanel(report) {
                 s.empty - s.samples.length
               } 行的序号见生成文档页</p>`
             : "")
-        : '<p class="trace-ok">该章节全部行均已关联需求</p>';
+        : '<p class="trace-ok">该章节 Source Code 行的 Parent ID 均非空</p>';
       return (
-        `<details class="trace-group"><summary>` +
+        `<details class="trace-group"${s.empty ? " open" : ""}><summary>` +
         `<span class="trace-group-name">${escapeHtml(s.title)} 章</span>` +
-        `<span class="trace-group-count ${mark(s.empty)}">空 ${s.empty} / 总 ${s.total}</span>` +
+        `<span class="trace-group-count ${mark(s.empty)}">空 ${s.empty} / 总 ${
+          s.total
+        } · ${formatRatio(s.emptyRatio)}</span>` +
         `</summary>${body}</details>`
       );
     })
     .join("");
 
-  // ② 需求侧：Requirement 行的反向覆盖
+  // ---- 视角二明细：逐条给出需求 ID 与需求内容（全部列出，不截断） ----
   const orphanBody = requirement.orphaned
-    ? `<ul class="trace-list">${requirement.orphans
-        .slice(0, TRACE_SAMPLE_LIMIT)
-        .map(
-          (o) =>
-            `<li><span class="trace-idx">${escapeHtml(o.id)}</span><span class="trace-name">${escapeHtml(
-              o.content || o.block || "（无内容）"
-            )}</span></li>`
-        )
-        .join("")}</ul>` +
-      (requirement.orphaned > TRACE_SAMPLE_LIMIT
-        ? `<p class="trace-more">仅列出前 ${TRACE_SAMPLE_LIMIT} 条，共 ${requirement.orphaned} 条</p>`
-        : "")
-    : '<p class="trace-ok">低层需求中所有 Requirement 均已被代码文档引用</p>';
-  const orphanGroup =
-    `<details class="trace-group"><summary>` +
-    `<span class="trace-group-name">未被引用的 Requirement</span>` +
-    `<span class="trace-group-count ${mark(requirement.orphaned)}">${
-      requirement.orphaned
-    } 行</span></summary>${orphanBody}</details>`;
+    ? `<ul class="trace-orphan-list">${requirement.orphans
+        .map((o) => {
+          const where = [
+            o.block ? `所属需求块 ${escapeHtml(o.block)}` : "未归属任何需求块",
+            `低层需求第 ${o.line} 行`,
+          ].join(" · ");
+          return (
+            `<li><span class="trace-orphan-id">${escapeHtml(o.id)}</span>` +
+            `<span class="trace-orphan-text">${escapeHtml(o.content || "（需求内容为空）")}` +
+            `<small>${where}</small></span></li>`
+          );
+        })
+        .join("")}</ul>`
+    : '<p class="trace-ok">低层需求中所有 Requirement 的 ID 均已被代码文档的 Parent ID 引用，无遗漏。</p>';
+
+  const orphanGroup = requirement.orphaned
+    ? `<details class="trace-group" open><summary>` +
+      `<span class="trace-group-name">未被引用的 Requirement</span>` +
+      `<span class="trace-group-count warn">${requirement.orphaned} 条 · ${reqRatio}</span>` +
+      `</summary>${orphanBody}</details>`
+    : orphanBody;
 
   // 附带核对：悬空引用 / 重复追溯 / 口径差异
   const extras = [];
@@ -475,7 +490,23 @@ function renderTracePanel(report) {
     `<div class="trace-head">${stats}` +
     (extras.length ? `<span class="trace-stat warn">${extras.join("；")}</span>` : "") +
     `</div>` +
-    `<div class="trace-groups">${sectionGroups}${orphanGroup}</div>` +
+    `<div class="trace-groups">` +
+    `<div class="trace-perspective">` +
+    `<div class="trace-perspective-head">` +
+    `<span class="trace-perspective-title">视角一 · 代码文档</span>` +
+    `<span class="trace-perspective-desc">Object Type = <b>Source Code</b> 的行，其 Parent ID 为空的情况；占比分母为 Source Code 行数（${code.sourceTotal}）</span>` +
+    `</div>` +
+    `<p class="trace-hint">Parent ID 按设计只在 Function Definition 章填充，其余数据章节（Type / Global Variable / Macro / Constant Definition）恒为空 —— 属结构性事实而非数据缺陷，故按章节分组呈现。</p>` +
+    sectionGroups +
+    `</div>` +
+    `<div class="trace-perspective">` +
+    `<div class="trace-perspective-head">` +
+    `<span class="trace-perspective-title">视角二 · 低层需求</span>` +
+    `<span class="trace-perspective-desc">Object Type = <b>Requirement</b> 的需求中，ID 未被代码文档 Parent ID 引用的情况；占比分母为 Requirement 条数（${requirement.total}）</span>` +
+    `</div>` +
+    orphanGroup +
+    `</div>` +
+    `</div>` +
     (notes.length
       ? `<div class="trace-notes">${notes.map((n) => `<span>⚠ ${escapeHtml(n)}</span>`).join("")}</div>`
       : "");

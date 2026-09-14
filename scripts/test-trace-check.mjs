@@ -66,6 +66,11 @@ console.log("[1/6] 代码侧：Source Code 行的 Parent ID 空值分组");
     nameSet: new Set(),
   });
   eq("全为 Comment 的章节不进入分组", [onlyComment.code.sourceTotal, onlyComment.code.sections.length], [0, 0]);
+  // 占比：分母必须是「Source Code 行数」，不是命中数、更不是硬编码
+  eq("代码侧空值占比（分母 = Source Code 总数 4）", r.code.emptyRatio, 3 / 4);
+  eq("Function 章空值占比（分母 = 该章总数 2）", fn.emptyRatio, 1 / 2);
+  eq("Type 章空值占比（2 / 2）", ty.emptyRatio, 1);
+  eq("分母为 0 时占比不可计算（null，渲染层显示「—」）", onlyComment.code.emptyRatio, null);
 }
 
 /* ============ 第 2 节：需求侧 —— Requirement 反向覆盖 ============ */
@@ -94,6 +99,8 @@ console.log("[2/6] 需求侧：Requirement 行的引用覆盖");
   eq("孤儿需求行号（1-based，便于定位）", r.requirement.orphans[0].line, 4);
   eq("Comment 行不进需求口径", r.requirement.orphans.some((o) => o.id === "R_3"), false);
   eq("空 Type 行不进需求口径", r.requirement.orphans.some((o) => o.id === "R_4"), false);
+  // 占比：分母必须是「Requirement 条数」（2），不是全表行数（6）、也不是命中数
+  eq("需求侧遗漏占比（分母 = Requirement 条数 2）", r.requirement.orphanRatio, 1 / 2);
   eq("非 Requirement 未被引用 → 不计入口径差异", r.extra.nonRequirementRefs, []);
 
   // 反例：Parent ID 指向一条「非 Requirement」行 → 口径差异应暴露
@@ -274,6 +281,10 @@ const realLlr = XLSX.utils.sheet_to_json(
   eq("真实数据：无重复追溯", r.extra.duplicated.length, 0);
   eq("真实数据：无非 Requirement 引用（生成与校验口径当前一致）", r.extra.nonRequirementRefs, []);
   eq("真实数据：低层需求总行数", realLlr.length, 406);
+  // 占比（界面两视角直接展示的两个数）
+  eq("真实数据：代码侧空值占比 = 46 / 108", r.code.emptyRatio, 46 / 108);
+  eq("真实数据：Function 章空值占比 = 0", r.code.sections.find((s) => s.key === "functions").emptyRatio, 0);
+  eq("真实数据：需求侧遗漏占比 = 0 / 271", r.requirement.orphanRatio, 0);
   // 空值行数与「非函数章行数」完全吻合 → 空值全部来自非函数章，函数章零空值
   const nonFn = r.code.sections.filter((s) => s.key !== "functions").reduce((s, g) => s + g.total, 0);
   eq("真实数据：空 Parent ID 全部来自非函数章", r.code.emptyParent, nonFn);

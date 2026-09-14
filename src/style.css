@@ -630,6 +630,82 @@ body {
   color: var(--faint);
 }
 
+/* 两个视角：与「代码文档」「低层需求」两个提问一一对应，各自给占比与明细 */
+.trace-perspective + .trace-perspective {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.trace-perspective-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 10px 12px 6px;
+}
+
+.trace-perspective-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.trace-perspective-desc {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.trace-perspective-desc b {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.trace-hint {
+  margin: 0;
+  padding: 0 12px 8px;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  color: var(--faint);
+}
+
+/* 未被引用的需求逐条列出：ID 与内容分行，内容不截断（便于直接读） */
+.trace-orphan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 12px 10px 34px;
+  list-style: none;
+}
+
+.trace-orphan-list li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 0.78rem;
+}
+
+.trace-orphan-id {
+  flex: none;
+  min-width: 130px;
+  font-family: var(--mono);
+  color: #b45309;
+}
+
+.trace-orphan-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.trace-orphan-text small {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
 .trace-notes {
   display: flex;
   flex-direction: column;

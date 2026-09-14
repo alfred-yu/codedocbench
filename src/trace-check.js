@@ -13,10 +13,17 @@
    - 重复追溯：同一条需求被多个符号引用（一个需求应只由一个符号承载）
    - 口径差异：出现在 Parent ID 中、却不是 Requirement 的需求 ID */
 
-export const TRACE_SAMPLE_LIMIT = 50; // 每组明细最多列出的行数（超出只给计数）
+export const TRACE_SAMPLE_LIMIT = 200; // 每组明细最多列出的行数（超出只给计数，避免超大文档把 DOM 撑爆）
 
 function norm(v) {
   return String(v == null ? "" : v).trim();
+}
+
+/* 占比计算放在纯模块里（渲染层只负责格式化成百分比文案），
+   这样分母写错能在回归脚本里被断言抓住 —— 界面层只有在分子非 0 时才有区分度。
+   分母为 0（不可计算）时返回 null，由渲染层显示为 "—"。 */
+function ratio(part, whole) {
+  return whole ? part / whole : null;
 }
 
 function isComment(v) {
@@ -162,12 +169,19 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
       sourceTotal,
       emptyParent,
       filledParent: sourceTotal - emptyParent,
-      sections: [...sectionMap.values()],
+      // 占比分母 = Source Code 行数
+      emptyRatio: ratio(emptyParent, sourceTotal),
+      sections: [...sectionMap.values()].map((s) => ({
+        ...s,
+        emptyRatio: ratio(s.empty, s.total),
+      })),
     },
     requirement: {
       total: reqRows.length,
       referenced: reqRows.length - orphans.length,
       orphaned: orphans.length,
+      // 占比分母 = Requirement 条数
+      orphanRatio: ratio(orphans.length, reqRows.length),
       orphans,
     },
     extra: { dangling, duplicated, nonRequirementRefs },
