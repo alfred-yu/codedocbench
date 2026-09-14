@@ -2,6 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 // xlsx-js-style：SheetJS 的样式支持分支（API 兼容），用于导出时加粗标题行
 import * as XLSX from "xlsx-js-style";
+// 链接文件分片规则（导入系统限定单文件 ≤50 数据行）
+import {
+  LINK_MAX_ROWS,
+  splitLinkRows,
+  partFileNames,
+  encodeLinkSheet,
+} from "./link-split.js";
 
 // 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
 document.title = `CodeDocBench (Powered By 余绍健, v${__APP_VERSION__})`;
@@ -1506,7 +1513,9 @@ async function exportDocExcel() {
    - 行范围：生成文档页中 Object Type 为 Source Code 的行（由源码解析出的符号行）
    - 链出 ID：该行在生成文档页「序号」列的值（序号列即为此索引引入）
    - 链入 ID：该行的 Parent ID；一个符号关联多个需求 ID 时拆成多行，各自成一条链接
-   - 链入/链出的项目名称、模块名称、模块路径均由用户输入，逐行填同一组值 */
+   - 链入/链出的项目名称、模块名称、模块路径均由用户输入，逐行填同一组值
+   - 分片：导入系统限定单个链接文件最多 LINK_MAX_ROWS 行数据，超出按行序切分为多个文件
+     （切分规则与矩阵构造见 src/link-split.js，便于脱离界面回归） */
 
 const linkInProject = document.getElementById("link-in-project");
 const linkInModule = document.getElementById("link-in-module");
@@ -1545,6 +1554,7 @@ let linkRows = []; // 链接行：{ outId, inId }
 let linkSourceCount = 0; // Source Code 行数（链接来源记录数）
 let linkLinkedCount = 0; // 其中已关联到需求的符号数
 let linkGenerated = false; // 是否已由「生成链接文件」按钮触发过生成（未生成时预览只给提示、不可导出）
+const LINK_FILE_BASE = "链接文件"; // 分片文件名前缀（单片导出时由用户在「另存为」对话框里自定文件名）
 
 /* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
 function buildLinkRows(fnIndex) {
@@ -1584,10 +1594,16 @@ function paintLinkTable() {
     return;
   }
   const cfg = linkCfg();
+  // 分片：导入系统限定单文件 ≤ LINK_MAX_ROWS 行数据，预览与导出用同一份切分结果
+  const parts = splitLinkRows(linkRows, LINK_MAX_ROWS);
+  const partNames = partFileNames(LINK_FILE_BASE, parts.length);
   linkStats.innerHTML = [
     `<span class="gen-stat">链出记录（Source Code 行）<b>${linkSourceCount}</b></span>`,
     `<span class="gen-stat">链接行 <b>${linkRows.length}</b></span>`,
     `<span class="gen-stat">已关联需求 <b>${linkLinkedCount}/${linkSourceCount}</b></span>`,
+    parts.length > 1
+      ? `<span class="gen-stat">超出单文件 ${LINK_MAX_ROWS} 行上限，将切分为 <b>${parts.length}</b> 个文件</span>`
+      : "",
     linkSourceCount && !linkLinkedCount
       ? '<span class="gen-stat warn">⚠ 尚未关联低层需求，链入 ID 将为空</span>'
       : "",
@@ -1604,24 +1620,40 @@ function paintLinkTable() {
     '<thead><tr><th class="link-group" colspan="4">链入</th>' +
     '<th class="link-group" colspan="4">链出</th></tr>' +
     `<tr>${fields.concat(fields).map((h) => `<th>${h}</th>`).join("")}</tr></thead>`;
-  const body = linkRows
-    .map(
-      (r) =>
-        `<tr><td class="link-meta">${escapeHtml(cfg.inProject)}</td>` +
-        `<td class="link-meta">${escapeHtml(cfg.inModule)}</td>` +
-        `<td class="link-meta">${escapeHtml(cfg.inPath)}</td>` +
-        `<td class="link-id">${escapeHtml(r.inId)}</td>` +
-        `<td class="link-meta">${escapeHtml(cfg.outProject)}</td>` +
-        `<td class="link-meta">${escapeHtml(cfg.outModule)}</td>` +
-        `<td class="link-meta">${escapeHtml(cfg.outPath)}</td>` +
-        `<td class="link-id">${r.outId}</td></tr>`
-    )
-    .join("");
+  const rowHtml = (r) =>
+    `<tr><td class="link-meta">${escapeHtml(cfg.inProject)}</td>` +
+    `<td class="link-meta">${escapeHtml(cfg.inModule)}</td>` +
+    `<td class="link-meta">${escapeHtml(cfg.inPath)}</td>` +
+    `<td class="link-id">${escapeHtml(r.inId)}</td>` +
+    `<td class="link-meta">${escapeHtml(cfg.outProject)}</td>` +
+    `<td class="link-meta">${escapeHtml(cfg.outModule)}</td>` +
+    `<td class="link-meta">${escapeHtml(cfg.outPath)}</td>` +
+    `<td class="link-id">${r.outId}</td></tr>`;
+  // 多片时在每片开头插入分隔行，标出该片对应的文件名与行区间（仅在预览中呈现，不写入 Excel）
+  const bodyParts = [];
+  let from = 1;
+  parts.forEach((part, i) => {
+    const to = from + part.length - 1;
+    if (parts.length > 1) {
+      bodyParts.push(
+        `<tr class="link-part-sep"><td colspan="8">第 ${i + 1} 个文件 · ${escapeHtml(
+          partNames[i]
+        )} · 第 ${from}–${to} 行</td></tr>`
+      );
+    }
+    for (const r of part) bodyParts.push(rowHtml(r));
+    from = to + 1;
+  });
+  const body = bodyParts.join("");
+  const info =
+    parts.length > 1
+      ? `共 ${linkRows.length} 行 · 切分为 ${parts.length} 个文件（每文件 ≤${LINK_MAX_ROWS} 行）· 与导出的 Excel 内容一致`
+      : `共 ${linkRows.length} 行 · 与导出的 Excel 内容一致`;
   // 表头与表体分属两个区域：表头固定、表体独立纵向滚动（与步骤 3/4 同款布局）
   linkPreviewEl.innerHTML =
     `<div class="rel-preview-head"><table class="rel-table link-table">${cols}${head}</table></div>` +
     `<div class="rel-preview-scroll"><table class="rel-table link-table">${cols}<tbody>${body}</tbody></table></div>` +
-    `<div class="rel-preview-info">共 ${linkRows.length} 行 · 与导出的 Excel 内容一致</div>`;
+    `<div class="rel-preview-info">${info}</div>`;
   // 宽表横向滚动时表头同步偏移，避免两区错位
   const headBox = linkPreviewEl.querySelector(".rel-preview-head");
   const scrollBox = linkPreviewEl.querySelector(".rel-preview-scroll");
@@ -1677,7 +1709,28 @@ function resetLinkGeneration() {
   paintLinkTable();
 }
 
-/* 导出链接文件：链入（项目名称/模块名称/模块路径/ID）+ 链出（同 4 列），双行表头 */
+/* 多片导出时的文件名前缀在链接状态区声明（LINK_FILE_BASE） */
+
+/* 目录 + 文件名拼接（分隔符沿用路径自身的风格，与 projectDataFilePath 一致） */
+function joinPath(dir, name) {
+  return dir.replace(/[\\/]+$/, "") + (dir.includes("\\") ? "\\" : "/") + name;
+}
+
+/* 目标文件是否已存在：save_file 直接覆盖，多片导出走「选目录」没有原生覆盖确认，需自行探测 */
+async function fileExists(path) {
+  try {
+    await invoke("read_file", { path });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* 导出链接文件：链入（项目名称/模块名称/模块路径/ID）+ 链出（同 4 列），双行表头。
+   导入系统限定单个链接文件最多 LINK_MAX_ROWS 行数据，超出自动切分为多个文件：
+   - 单文件：沿用「另存为」对话框（可自定文件名与位置）
+   - 多文件：选择导出目录，批量写出 链接文件_1..N.xlsx（多文件不适用单文件对话框语义）
+   链出 ID 保持「生成文档页序号列」的原值，分片不重编，跨片仍可回查源文档。 */
 async function exportLinkExcel() {
   // 导出内容即预览内容：未生成时不允许导出，避免导出未经确认的数据
   if (!linkGenerated) {
@@ -1697,49 +1750,72 @@ async function exportLinkExcel() {
   }
 
   const cfg = linkCfg();
-  const fieldRow = ["项目名称", "模块名称", "模块路径", "ID"];
-  const aoa = [
-    ["链入", "", "", "", "链出", "", "", ""],
-    fieldRow.concat(fieldRow),
-    ...linkRows.map((r) => [
-      cfg.inProject, cfg.inModule, cfg.inPath, r.inId,
-      cfg.outProject, cfg.outModule, cfg.outPath, r.outId,
-    ]),
-  ];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  // 分组表头跨列合并：链入 A1:D1、链出 E1:H1
-  ws["!merges"] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 3 } },
-    { s: { r: 0, c: 4 }, e: { r: 0, c: 7 } },
-  ];
-  ws["!cols"] = [
-    { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 12 },
-    { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 12 },
-  ];
-  // 两行表头均加粗
-  for (const addr of ["A1", "E1", "A2", "B2", "C2", "D2", "E2", "F2", "G2", "H2"]) {
-    const cell = ws[addr];
-    if (cell) cell.s = { font: { bold: true } };
+  const parts = splitLinkRows(linkRows, LINK_MAX_ROWS);
+  const names = partFileNames(LINK_FILE_BASE, parts.length);
+
+  let targets;
+  if (parts.length > 1) {
+    const dir = await open({
+      directory: true,
+      multiple: false,
+      title: `选择链接文件导出目录（共 ${parts.length} 个文件）`,
+    });
+    if (!dir) return; // 用户取消
+    targets = names.map((n) => joinPath(dir, n));
+  } else {
+    const filePath = await save({
+      title: "导出链接文件",
+      defaultPath: names[0],
+      filters: [{ name: "Excel 文件", extensions: ["xlsx"] }],
+    });
+    if (!filePath) return; // 用户取消
+    targets = [filePath];
   }
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "链接文件");
-  const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 
-  const filePath = await save({
-    title: "导出链接文件",
-    defaultPath: "链接文件.xlsx",
-    filters: [{ name: "Excel 文件", extensions: ["xlsx"] }],
-  });
-  if (!filePath) return; // 用户取消
+  if (targets.length > 1) {
+    const exist = [];
+    for (const p of targets) {
+      if (await fileExists(p)) exist.push(p);
+    }
+    if (exist.length) {
+      const ok = confirm(
+        `导出目录下已有 ${exist.length} 个同名文件，继续将覆盖：\n` +
+          exist.map((p) => p.split(/[\\/]/).pop()).join("\n")
+      );
+      if (!ok) return;
+    }
+  }
 
-  try {
-    await invoke("save_file", { path: filePath, data: Array.from(bytes) });
-    alert(`已导出：${filePath}`);
-  } catch (err) {
-    alert(`导出失败：${err}`);
+  const written = [];
+  const failed = [];
+  let cursor = 1; // 该片首行在整个链接表中的行号（用于导出后汇报行区间）
+  for (let i = 0; i < parts.length; i++) {
+    const from = cursor;
+    const to = cursor + parts[i].length - 1;
+    cursor = to + 1;
+    try {
+      const bytes = encodeLinkSheet(parts[i], cfg, XLSX);
+      await invoke("save_file", { path: targets[i], data: Array.from(bytes) });
+      written.push({ path: targets[i], from, to });
+    } catch (err) {
+      failed.push(`${targets[i]}：${err}`);
+    }
+  }
+
+  if (failed.length) {
+    alert(
+      `导出未全部完成：成功 ${written.length}/${parts.length} 个文件\n` +
+        `失败：\n${failed.join("\n")}`
+    );
+    return;
+  }
+  if (parts.length > 1) {
+    alert(
+      `已按每文件 ${LINK_MAX_ROWS} 行上限切分，导出 ${parts.length} 个链接文件（共 ${linkRows.length} 行）：\n` +
+        written.map((w) => `${w.path}（第 ${w.from}–${w.to} 行）`).join("\n")
+    );
+  } else {
+    alert(`已导出：${written[0].path}`);
   }
 }
 

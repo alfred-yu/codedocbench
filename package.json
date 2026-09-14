@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "smoke": "vite build && node scripts/smoke-ui.mjs",
+    "smoke": "vite build && node scripts/smoke-ui.mjs && node scripts/test-link-split.mjs",
+    "test:link-split": "node scripts/test-link-split.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

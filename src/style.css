@@ -1179,6 +1179,17 @@ body {
   text-align: right;
 }
 
+/* 分片分隔行：仅存在于预览，标出该片文件名与行区间，不写入 Excel */
+.link-table tr.link-part-sep td {
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border-strong);
+}
+
 /* ---------------- 解析详情 ---------------- */
 .detail-empty {
   color: var(--muted);

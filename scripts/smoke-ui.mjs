@@ -1,11 +1,17 @@
 // 前端冒烟测试：在 Node 里用 DOM stub + 伪 Tauri 后端执行打包产物，
 // 覆盖 `vite build` 与 pytest 都抓不到的一类缺陷——模块顶层引用未声明的标识符
 // （会让整个模块求值中断，表现为「打开项目无反应 / 点击按钮无反应」）。
+// 另外驱动步骤 5 的「生成 → 导出」真实链路：伪后端喂入 120 行链接数据，
+// 校验多文件分片导出的写盘字节（文件个数、文件名、每文件数据行数、ID 不丢不重）。
 //
 // 用法：npm run smoke   （先构建，再冒烟）
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const XLSX = require("xlsx-js-style");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist", "assets");
@@ -99,14 +105,47 @@ globalThis.document = {
   title: "",
 };
 
-/* ---------- 伪 Tauri 后端：决定「打开项目」走哪条分支 ---------- */
+/* ---------- 伪 Tauri 后端 ----------
+   让「打开项目 → 生成链接文件 → 导出分片」整条链路可跑通：
+   - 项目数据文件里挂载一个 .c，解析结果为 120 个函数
+   - 120 行链接 > 单文件上限 50 → 导出必然走多文件分片分支            */
+const PROJECT_DATA_FILENAME = ".codedocbench.json";
+const SOURCE_PATH = path.join(ROOT, "samples", "cproject", "src", "big.c");
+const FUNC_COUNT = 120;
+const FUNCS = Array.from({ length: FUNC_COUNT }, (_, i) => ({
+  name: "fn_" + String(i + 1).padStart(3, "0"),
+}));
+const PROJECT_PAYLOAD = JSON.stringify({
+  version: 1,
+  savedAt: 0,
+  docTree: [{ id: 1, type: "file", title: "big.c", path: SOURCE_PATH, children: [] }],
+  llr: null,
+  link: {
+    inProject: "P-IN", inModule: "SWLR008", inPath: "P/LLR/",
+    outProject: "P-OUT", outModule: "SCTD004", outPath: "P/CODE/",
+  },
+});
+
 const invoked = [];
+const savedFiles = [];
 const tauriInvoke = async (cmd, args) => {
   invoked.push(cmd);
-  if (cmd.startsWith("plugin:dialog")) return ROOT; // 模拟用户在对话框里选中项目目录
+  if (cmd === "plugin:dialog|save") return path.join(ROOT, "链接文件.xlsx"); // 另存为：返回文件路径
+  if (cmd.startsWith("plugin:dialog")) return ROOT; // 选目录：返回目录路径
   if (cmd === "scan_dir") return { type: "dir", name: path.basename(ROOT), path: args.path, children: [] };
-  if (cmd === "read_file") throw new Error("ENOENT: 项目文件不存在"); // 走 localStorage 兼容分支
-  if (cmd === "save_file") return null;
+  if (cmd === "read_file") {
+    if (String(args.path).endsWith(PROJECT_DATA_FILENAME)) {
+      return Array.from(new TextEncoder().encode(PROJECT_PAYLOAD));
+    }
+    throw new Error("ENOENT: 文件不存在"); // 导出时的同名覆盖探测走这条
+  }
+  if (cmd === "parse_file")
+    return { functions: FUNCS, structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
+  if (cmd === "file_mtime") return 1;
+  if (cmd === "save_file") {
+    savedFiles.push({ path: args.path, data: args.data });
+    return null;
+  }
   return null;
 };
 
@@ -140,44 +179,97 @@ console.log("[smoke] 打包产物:", bundle);
 
 try {
   await import("file:///" + path.join(DIST, bundle).replace(/\\/g, "/"));
-  console.log("[1/4] 模块顶层执行完成");
+  console.log("[1/6] 模块顶层执行完成");
 } catch (e) {
-  console.log("[1/4] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
+  console.log("[1/6] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
   process.exit(1);
 }
 
-// 触发「点击打开项目目录」：找绑定了 click 的容器
-const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
-if (!treeEl) {
-  console.log("[2/4] 未找到打开项目的 click 监听 ❌");
-  process.exit(1);
-}
-for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
-await new Promise((r) => setTimeout(r, 300));
-console.log("[2/4] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
-if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
-
-// 步骤 5 两个按钮必须已接线
+const settle = (ms = 300) => new Promise((r) => setTimeout(r, ms));
 const clickBtn = (id) => {
   const fns = registry.get(id) && registry.get(id).__listeners.click;
   if (!fns || !fns.length) return false;
   for (const fn of fns) fn({});
   return true;
 };
+
+// 触发「点击打开项目目录」：找绑定了 click 的容器
+const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
+if (!treeEl) {
+  console.log("[2/6] 未找到打开项目的 click 监听 ❌");
+  process.exit(1);
+}
+for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
+await settle(400);
+console.log("[2/6] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
+if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
+if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
+
+console.log("[3/6] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");
 const runBound = clickBtn("link-run-btn");
-await new Promise((r) => setTimeout(r, 50));
-console.log("[3/4] 步骤 5 按钮接线: 生成=" + (genBound ? "已绑定" : "未绑定") + " 导出=" + (runBound ? "已绑定" : "未绑定"));
+await settle(80);
+const xlsxWritten = () => savedFiles.filter((f) => f.path.endsWith(".xlsx"));
+console.log(`  生成按钮=${genBound ? "已绑定" : "未绑定"}  导出按钮=${runBound ? "已绑定" : "未绑定"}  未生成时导出文件=${xlsxWritten().length} 个`);
 if (!genBound) fail.push("link-gen-btn 未绑定 click");
 if (!runBound) fail.push("link-run-btn 未绑定 click");
-if (!alerts.some((a) => a.includes("文档目录树为空"))) fail.push("生成按钮未走前置校验");
-if (!alerts.some((a) => a.includes("生成链接文件"))) fail.push("导出按钮未走「未生成不可导出」守卫");
+if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
+if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
+console.log("[4/6] 生成链接文件（120 个函数 → 120 行链接，超过单文件 50 行上限）");
+const wMark = writes.length;
+clickBtn("link-gen-btn");
+await settle(400);
+const htmlOf = (id) =>
+  writes.slice(wMark).filter((w) => w.id === id).map((w) => w.value).pop() || "";
+const statsHtml = htmlOf("link-stats");
+const previewHtml = htmlOf("link-preview");
+if (!/链接行 <b>120<\/b>/.test(statsHtml)) fail.push("统计未显示 120 行链接：" + statsHtml.slice(0, 160));
+if (!/切分为 <b>3<\/b> 个文件/.test(statsHtml)) fail.push("统计未显示将切分为 3 个文件：" + statsHtml.slice(0, 160));
+if (!previewHtml.includes("链接文件_1.xlsx")) fail.push("预览未标出分片文件名");
+if (!previewHtml.includes("第 1–50 行")) fail.push("预览未标出分片行区间");
+console.log("  统计:", statsHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+
+console.log("[5/6] 导出分片：校验真实写盘字节");
+clickBtn("link-run-btn");
+await settle(600);
+// 注意：save_file 也用于写工程数据文件（.codedocbench.json），这里只看导出的 Excel
+const xlsxFiles = savedFiles.filter((f) => f.path.endsWith(".xlsx"));
+const names = xlsxFiles.map((f) => path.basename(f.path));
+console.log("  写出 Excel:", xlsxFiles.length, "→", names.join(", "));
+if (xlsxFiles.length !== 3) fail.push(`应导出 3 个 Excel，实际 ${xlsxFiles.length} 个：${names.join(", ")}`);
+if (JSON.stringify(names) !== JSON.stringify(["链接文件_1.xlsx", "链接文件_2.xlsx", "链接文件_3.xlsx"]))
+  fail.push("文件名为 " + JSON.stringify(names));
+// 逐文件解码：数据行数、zip 魔数、链出 ID 连续且不重复
+const rowsPerFile = [];
+const outIds = [];
+for (const f of xlsxFiles) {
+  const bytes = new Uint8Array(f.data);
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) fail.push(`${path.basename(f.path)} 不是 zip/xlsx 字节`);
+  const sheet = XLSX.read(bytes, { type: "array" }).Sheets["链接文件"];
+  if (!sheet) {
+    fail.push(`${path.basename(f.path)} 内无「链接文件」工作表`);
+    continue;
+  }
+  const lastRow = XLSX.utils.decode_range(sheet["!ref"]).e.r + 1;
+  rowsPerFile.push(lastRow - 2); // 去掉两行表头
+  for (let r = 3; r <= lastRow; r++) outIds.push(sheet["H" + r].v);
+}
+console.log("  每文件数据行数:", JSON.stringify(rowsPerFile), "| 链出 ID 共", outIds.length, "个");
+if (JSON.stringify(rowsPerFile) !== JSON.stringify([50, 50, 20]))
+  fail.push("每文件数据行数应为 [50,50,20]，实际 " + JSON.stringify(rowsPerFile));
+if (outIds.length !== 120) fail.push(`三片合计应为 120 行，实际 ${outIds.length} 行`);
+if (new Set(outIds).size !== outIds.length) fail.push("链出 ID 跨片出现重复");
+if (!outIds.every((v, i) => i === 0 || v > outIds[i - 1])) fail.push("链出 ID 未保持递增（可能被重编）");
+const summary = alerts.slice(-1)[0] || "";
+if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
+
+console.log("[6/6] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));
+console.log("  错误文案:", bad.length ? JSON.stringify(bad) : "无", "| 未处理异常:", rejections.length ? rejections.join(" | ") : "无");
 
-console.log("[4/4] 错误文案:", bad.length ? JSON.stringify(bad) : "无", "| 未处理异常:", rejections.length ? rejections.join(" | ") : "无");
 if (fail.length) {
   console.log("\n结论: 冒烟失败 ❌");
   fail.forEach((f) => console.log("  - " + f));
