@@ -14,6 +14,9 @@ __pycache__/
 .vscode/
 .trae/
 
+# 工作区本机数据（memory / 项目笔记，不应入库）
+.workbuddy/
+
 # 系统文件
 Thumbs.db
 .DS_Store

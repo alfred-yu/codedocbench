@@ -1,4 +1,5 @@
 """使用 Python 标准库生成一个合法的 ICO 文件（内嵌单张 256x256 RGBA PNG）。"""
+from pathlib import Path
 import struct
 import zlib
 
@@ -31,7 +32,7 @@ def make_ico(png: bytes) -> bytes:
 if __name__ == "__main__":
     png_data = make_png(SIZE, SIZE, color)
     ico = make_ico(png_data)
-    out = r"C:\Users\Administrator\Desktop\CodeDocBench\src-tauri\icons\icon.ico"
+    out = Path(__file__).resolve().parents[1] / "src-tauri" / "icons" / "icon.ico"
     with open(out, "wb") as f:
         f.write(ico)
     print(f"wrote {out} ({len(ico)} bytes)")

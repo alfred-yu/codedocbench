@@ -1,4 +1,5 @@
 use std::process::Command;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,14 +26,14 @@ fn read_file(path: String) -> Result<Vec<u8>, String> {
 
 /// 扫描目录，返回嵌套目录树 JSON。
 #[tauri::command]
-fn scan_dir(path: String) -> serde_json::Value {
-    run_backend("scan_dir", &path)
+fn scan_dir(path: String, app: tauri::AppHandle) -> serde_json::Value {
+    run_backend("scan_dir", &path, &app)
 }
 
 /// 解析单个 C/C++ 源码文件，返回符号 JSON。
 #[tauri::command]
-fn parse_file(path: String) -> serde_json::Value {
-    run_backend("parse_file", &path)
+fn parse_file(path: String, app: tauri::AppHandle) -> serde_json::Value {
+    run_backend("parse_file", &path, &app)
 }
 
 /// 返回文件最后修改时间（毫秒时间戳），用于前端解析缓存失效判断。
@@ -50,8 +51,8 @@ fn file_mtime(path: String) -> Result<u128, String> {
 
 /// 以子进程方式调用 Python 后端并解析其 stdout JSON。
 /// 任一环节失败都会返回 `{"type":"error","message":...}`，保证前端可读且不 panic。
-fn run_backend(mode: &str, path: &str) -> serde_json::Value {
-    let script = match resolve_backend_script() {
+fn run_backend(mode: &str, path: &str, app: &tauri::AppHandle) -> serde_json::Value {
+    let script = match resolve_backend_script(app) {
         Ok(p) => p,
         Err(msg) => return err_json(&msg),
     };
@@ -75,16 +76,26 @@ fn run_backend(mode: &str, path: &str) -> serde_json::Value {
 }
 
 /// 运行时解析 Python 后端脚本路径。
-/// 优先取 exe 同级的 `python/backend.py`（发布形态：exe 与 python 目录一起分发）；
-/// 不存在时回退到编译期项目根（`cargo tauri dev` 下 exe 位于 target/debug，源码只在项目根）。
-/// 两个位置都找不到时返回可读错误，列出全部候选路径，便于定位分发遗漏。
-fn resolve_backend_script() -> Result<std::path::PathBuf, String> {
+/// 候选顺序（任一命中即可，覆盖 dev / 各平台发布形态）：
+///   1. exe 同级 `python/backend.py`（发布主路径：安装包把 python 目录放到了 exe 旁）
+///   2. exe 同级 `resources/python/backend.py`（Tauri 把资源落到了 <exe_dir>/resources 的情况）
+///   3. Tauri 官方资源目录 `resource_dir()/python/backend.py`（跨平台正确的资源落点）
+///   4. 编译期项目根 `python/backend.py`（`cargo tauri dev` 下 exe 位于 target/debug，源码只在项目根）
+/// 全部找不到时返回可读错误，列出全部候选路径，便于定位分发遗漏。
+fn resolve_backend_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
+        // 1) exe 同级
         candidates.push(dir.join("python").join("backend.py"));
+        // 2) exe 同级的 resources 子目录（部分打包形态）
+        candidates.push(dir.join("resources").join("python").join("backend.py"));
+    }
+    // 3) Tauri 官方资源目录（跨平台正确，优先级高于 dev 候选）
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push(res.join("python").join("backend.py"));
     }
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -109,13 +120,41 @@ fn resolve_backend_script() -> Result<std::path::PathBuf, String> {
     ))
 }
 
+/// 探测可用的 Python 解释器。
+/// Windows 优先 `py`（Microsoft Store 启动器），其次 `python3`、`python`；
+/// 非 Windows 优先 `python3`，其次 `python`。
+/// 客户机只装了 `py` 或 `python3` 而非 `python` 时也能启动后端。
+fn find_python() -> String {
+    let candidates: &[&str] = if cfg!(target_os = "windows") {
+        &["py", "python3", "python"]
+    } else {
+        &["python3", "python"]
+    };
+    for name in candidates {
+        if Command::new(name)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return name.to_string();
+        }
+    }
+    // 全部探测失败则退回默认名，具体错误由 run_python 的 stderr 体现
+    if cfg!(target_os = "windows") {
+        "py".to_string()
+    } else {
+        "python3".to_string()
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn run_python(script: &str, args: &[&str]) -> Result<std::process::Output, String> {
     use std::os::windows::process::CommandExt;
     // GUI 进程派生控制台子进程时 Windows 会新建控制台窗口，
     // CREATE_NO_WINDOW 避免解析期间反复闪过黑色控制台
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    Command::new("python")
+    Command::new(find_python())
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .arg(script)
@@ -127,7 +166,7 @@ fn run_python(script: &str, args: &[&str]) -> Result<std::process::Output, Strin
 
 #[cfg(not(target_os = "windows"))]
 fn run_python(script: &str, args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("python3")
+    Command::new(find_python())
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .arg(script)
