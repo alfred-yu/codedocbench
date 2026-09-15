@@ -51,11 +51,10 @@ fn file_mtime(path: String) -> Result<u128, String> {
 /// 以子进程方式调用 Python 后端并解析其 stdout JSON。
 /// 任一环节失败都会返回 `{"type":"error","message":...}`，保证前端可读且不 panic。
 fn run_backend(mode: &str, path: &str) -> serde_json::Value {
-    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let script = project_root.join("python").join("backend.py");
+    let script = match resolve_backend_script() {
+        Ok(p) => p,
+        Err(msg) => return err_json(&msg),
+    };
 
     let output = match run_python(&script.to_string_lossy(), &[mode, path]) {
         Ok(out) => out,
@@ -73,6 +72,41 @@ fn run_backend(mode: &str, path: &str) -> serde_json::Value {
         Ok(v) => v,
         Err(e) => err_json(&format!("解析 Python 输出失败: {e}")),
     }
+}
+
+/// 运行时解析 Python 后端脚本路径。
+/// 优先取 exe 同级的 `python/backend.py`（发布形态：exe 与 python 目录一起分发）；
+/// 不存在时回退到编译期项目根（`cargo tauri dev` 下 exe 位于 target/debug，源码只在项目根）。
+/// 两个位置都找不到时返回可读错误，列出全部候选路径，便于定位分发遗漏。
+fn resolve_backend_script() -> Result<std::path::PathBuf, String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        candidates.push(dir.join("python").join("backend.py"));
+    }
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dev_candidate = project_root.join("python").join("backend.py");
+    if !candidates.contains(&dev_candidate) {
+        candidates.push(dev_candidate);
+    }
+    for c in &candidates {
+        if c.is_file() {
+            return Ok(c.clone());
+        }
+    }
+    Err(format!(
+        "未找到 Python 后端脚本 backend.py，已尝试：{}。发布时请将 python 目录与 exe 放在同一目录下。",
+        candidates
+            .iter()
+            .map(|c| c.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("；")
+    ))
 }
 
 #[cfg(target_os = "windows")]
