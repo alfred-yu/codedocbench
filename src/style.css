@@ -1216,6 +1216,27 @@ body {
   color: var(--text-2);
 }
 
+/* 生成预览分页器（与链接预览 .link-pager 同款视觉） */
+.gen-pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.gen-pager .btn:disabled {
+  opacity: 0.4;
+  background: transparent;
+}
+
+.gen-page-num {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
 /* ---------------- 解析详情 ---------------- */
 .detail-empty {
   color: var(--muted);

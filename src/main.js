@@ -279,6 +279,12 @@ function buildGenRows(fnIndex) {
   return collectDocRows(docTree, [], fnIndex);
 }
 
+// 生成预览分页：每页最多渲染 GEN_PAGE_SIZE 行，避免挂载上百文件时一次性将上万行
+// 灌入 innerHTML 造成步骤 4 卡顿（架构与步骤 5 链接预览的分页器一致）。
+const GEN_PAGE_SIZE = 100;
+let genPage = 0; // 当前页（0-based）：仅影响预览、不影响导出
+let genRowsCache = null; // 已构建的行数据，翻页时直接切片、无需重新解析源码
+
 async function renderGenPreview() {
   // 先确保数据行取自最新解析结果；低层需求文件被外部修改时自动重读
   await refreshAllFileData();
@@ -311,23 +317,74 @@ async function renderGenPreview() {
     genPreview.innerHTML = '<p class="placeholder">文档目录树为空</p>';
     return;
   }
-  // 序号列：仅预览可见的辅助列（表头不参与编号，从第一行数据起为 1；不写入导出的 Excel）
+  genRowsCache = rows;
+  genPage = 0; // 数据刷新后回到首页
+  paintGenPreview();
+}
+
+/* 仅重绘当前页：翻页/目录树变更后调用，不重新解析源码 */
+function paintGenPreview() {
+  const rows = genRowsCache || [];
+  const total = rows.length;
+  const pageCount = Math.max(1, Math.ceil(total / GEN_PAGE_SIZE));
+  if (genPage > pageCount - 1) genPage = pageCount - 1;
+  if (genPage < 0) genPage = 0;
+  const start = genPage * GEN_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + GEN_PAGE_SIZE);
+
   const head = ["", "章节号", "需求内容", "Object Type", "Parent ID"]
     .map((h) => `<th>${h}</th>`)
     .join("");
   const colgroup =
     '<colgroup><col style="width:6%"><col style="width:10%"><col style="width:52%"><col style="width:14%"><col style="width:18%"></colgroup>';
-  const body = rows
+  const body = pageRows
     .map((r, i) => {
       const titleCell = `<td class="${r.num !== "" ? "gen-title-cell" : ""}">${escapeHtml(r.title)}</td>`;
-      return `<tr><td class="gen-idx">${i + 1}</td><td class="mono">${escapeHtml(r.num)}</td>${titleCell}<td>${escapeHtml(r.objectType)}</td><td class="mono">${escapeHtml(r.parent).replaceAll("\n", "<br>")}</td></tr>`;
+      // 序号列反映该行在全表中的位置（跨页连续），表头不参与编号、不写入 Excel
+      return `<tr><td class="gen-idx">${start + i + 1}</td><td class="mono">${escapeHtml(r.num)}</td>${titleCell}<td>${escapeHtml(r.objectType)}</td><td class="mono">${escapeHtml(r.parent).replaceAll("\n", "<br>")}</td></tr>`;
     })
     .join("");
-  // 表头与表体分属两个区域：表头固定，表体独立滚动（固定列布局保证对齐）
+  const info =
+    pageCount > 1
+      ? `第 ${genPage + 1} / ${pageCount} 页 · 第 ${start + 1}–${start + pageRows.length} 行 / 共 ${total} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）`
+      : `共 ${total} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）`;
+  const pager =
+    pageCount > 1
+      ? '<span class="gen-pager">' +
+        `<button id="gen-page-prev" class="btn btn-ghost btn-sm" type="button"${genPage === 0 ? " disabled" : ""}>上一页</button>` +
+        `<span class="gen-page-num">${genPage + 1} / ${pageCount}</span>` +
+        `<button id="gen-page-next" class="btn btn-ghost btn-sm" type="button"${genPage === pageCount - 1 ? " disabled" : ""}>下一页</button>` +
+        "</span>"
+      : "";
+  // 表头固定、表体独立滚动（与步骤 3/5 同款布局）
   genPreview.innerHTML =
     `<div class="gen-preview-head"><table class="rel-table gen-table">${colgroup}<thead><tr>${head}</tr></thead></table></div>` +
     `<div class="gen-preview-scroll"><table class="rel-table gen-table">${colgroup}<tbody>${body}</tbody></table></div>` +
-    `<div class="gen-preview-info">共 ${rows.length} 行 · 与导出的 Excel 内容一致（标题行导出时加粗）</div>`;
+    `<div class="gen-preview-info">${info}${pager}</div>`;
+  // 横向滚动时表头同步偏移，避免两区错位
+  const headBox = genPreview.querySelector(".gen-preview-head");
+  const scrollBox = genPreview.querySelector(".gen-preview-scroll");
+  scrollBox.addEventListener("scroll", () => {
+    headBox.scrollLeft = scrollBox.scrollLeft;
+  });
+  if (pageCount > 1) {
+    genPreview
+      .querySelector("#gen-page-prev")
+      .addEventListener("click", () => goGenPage(genPage - 1));
+    genPreview
+      .querySelector("#gen-page-next")
+      .addEventListener("click", () => goGenPage(genPage + 1));
+  }
+}
+
+/* 翻页：只改变预览当前页，导出始终是全部行 */
+function goGenPage(n) {
+  const total = (genRowsCache || []).length;
+  const pageCount = Math.max(1, Math.ceil(total / GEN_PAGE_SIZE));
+  const next = Math.min(Math.max(n, 0), pageCount - 1);
+  if (next === genPage) return;
+  genPage = next;
+  paintGenPreview(); // 整块重绘 → 表体自然回到顶部
 }
 
 /* ---- 一致性检查报告导出（步骤 4 主入口）：代码文档 ↔ 低层需求的双向追溯核对 ----

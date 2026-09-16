@@ -279,6 +279,14 @@ const clickSelector = (sel) => {
   for (const fn of fns) fn({});
   return true;
 };
+/* 与 clickSelector 同机制，但支持任意容器（生成预览分页器挂在 gen-preview 下） */
+const clickSelectorIn = (containerId, sel) => {
+  const el = selectorRegistry.get(containerId + " >> " + sel);
+  const fns = el && el.__listeners.click;
+  if (!fns || !fns.length) return false;
+  for (const fn of fns) fn({});
+  return true;
+};
 
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
@@ -474,7 +482,59 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
   console.log("  报告已导出，摘要:", lastAlert.replace(/\n/g, " | ").slice(0, 170));
 }
 
-console.log("[7/7] 错误文案 / 未处理异常");
+console.log("[7/8] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
+{
+  // 用户操作顺序点击 stepper 解锁步骤（maxStep 闸门），最终触发 renderGenPreview
+  const stepFns = registry.get("stepper") && registry.get("stepper").__listeners.click;
+  const clickStep = (n) => {
+    if (!stepFns || !stepFns.length) return false;
+    const ev = { target: { closest: () => ({ dataset: { step: String(n) }, disabled: false }) } };
+    for (const fn of stepFns) fn(ev);
+    return true;
+  };
+  if (!clickStep(2)) fail.push("stepper 未绑定 click（无法进入步骤 4 测试）");
+  await settle(40);
+  clickStep(3);
+  await settle(40);
+  clickStep(4);
+  await settle(400); // 等 renderGenPreview 的 async 刷新（refreshAllFileData / refreshLlrIfChanged）
+
+  const genWrites = () => writes.filter((w) => w.id === "gen-preview" && w.key === "innerHTML");
+  if (!genWrites().length) {
+    fail.push("进入步骤 4 后 gen-preview 未渲染（renderGenPreview 可能未执行或抛错）");
+  } else {
+    const html = genWrites()[genWrites().length - 1].value;
+    // 取 tbody 片段统计本页实际渲染的数据行数（thead 内的 <tr> 不计入）
+    const tbody = (html.match(/<tbody>([\s\S]*?)<\/tbody>/) || [, ""])[1];
+    const rowCount = (tbody.match(/<tr>/g) || []).length;
+    const total = Number((html.match(/共 (\d+) 行/) || [, 0])[1]);
+    if (rowCount === 0) fail.push("gen-preview 表格体无数据行");
+    // 核心回归：单页绝不超过分页上限 100 行（原实现会一次性灌入上万行导致卡顿）
+    if (rowCount > 100) fail.push(`gen-preview 单页渲染 ${rowCount} 行，超过分页上限 100（老 bug 回潮）`);
+    if (total > 100 && !/id="gen-page-next"/.test(html))
+      fail.push(`数据共 ${total} 行（>100）却未出现分页器`);
+    if (total > 100) {
+      // 翻页：点击下一页，断言表体变化、回到首页按钮可用、末页下一页禁用
+      if (!clickSelectorIn("gen-preview", "#gen-page-next")) {
+        fail.push("gen-page-next 未绑定 click（分页器接线失败）");
+      } else {
+        await settle(40);
+        const html2 = genWrites()[genWrites().length - 1].value;
+        const row2 = (html2.match(/<tbody>([\s\S]*?)<\/tbody>/) || [, ""])[1];
+        const c2 = (row2.match(/<tr>/g) || []).length;
+        if (c2 < 0) fail.push("翻页后 gen-preview 表体为空");
+        if (c2 === rowCount) fail.push("翻页后渲染行数与首页相同（翻页未生效）");
+        if (/id="gen-page-prev"[^>]*disabled/.test(html2))
+          fail.push("翻到末页后「上一页」被错误禁用");
+        if (!/id="gen-page-next"[^>]*disabled/.test(html2))
+          fail.push("翻到末页后「下一页」未禁用");
+      }
+    }
+    console.log(`  生成预览：共 ${total} 行 · 首页渲染 ${rowCount} 行 · 分页器 ${total > 100 ? "已出现" : "未出现（数据未超一页）"}`);
+  }
+}
+
+console.log("[8/8] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));
