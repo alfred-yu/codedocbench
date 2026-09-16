@@ -106,18 +106,24 @@ fn resolve_backend(app: &tauri::AppHandle) -> Result<BackendTarget, String> {
         "backend"
     };
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    // 候选「基目录」：exe 同级 backend_bin、exe 同级 resources/backend_bin、
+    // Tauri 资源目录下的 backend_bin。每个基目录下优先匹配 onedir 布局
+    // （backend_bin/backend/backend[.exe]，启动无需解压、最快），回退单文件
+    // onefile（backend_bin/backend[.exe]，启动需解压、较慢）。
+    let mut bases: Vec<std::path::PathBuf> = Vec::new();
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
     {
-        // 1) exe 同级
-        candidates.push(dir.join("backend_bin").join(bin_name));
-        // 2) exe 同级的 resources 子目录（部分打包形态）
-        candidates.push(dir.join("resources").join("backend_bin").join(bin_name));
+        bases.push(dir.join("backend_bin"));
+        bases.push(dir.join("resources").join("backend_bin"));
     }
-    // 3) Tauri 官方资源目录（跨平台正确，优先级高于 dev 候选）
     if let Ok(res) = app.path().resource_dir() {
-        candidates.push(res.join("backend_bin").join(bin_name));
+        bases.push(res.join("backend_bin"));
+    }
+    for base in &bases {
+        candidates.push(base.join("backend").join(bin_name)); // onedir：目录式，启动最快
+        candidates.push(base.join(bin_name)); // onefile 兜底：需解压，较慢
     }
     for c in &candidates {
         if c.is_file() {

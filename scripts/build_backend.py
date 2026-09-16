@@ -24,7 +24,7 @@ cmd = [
     sys.executable,
     "-m",
     "PyInstaller",
-    "--onefile",
+    "--onedir",
     "--name",
     name,
     "--distpath",
