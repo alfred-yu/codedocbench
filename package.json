@@ -10,6 +10,8 @@
     "smoke": "vite build && node scripts/smoke-ui.mjs && node scripts/test-link-split.mjs && node scripts/test-trace-check.mjs",
     "test:link-split": "node scripts/test-link-split.mjs",
     "test:trace-check": "node scripts/test-trace-check.mjs",
+    "freeze:backend": "python scripts/build_backend.py",
+    "before:tauri:build": "npm run freeze:backend && npm run build",
     "tauri": "tauri"
   },
   "dependencies": {

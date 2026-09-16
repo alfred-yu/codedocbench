@@ -8,6 +8,10 @@ src-tauri/target/
 # Python
 __pycache__/
 *.pyc
+# 冻结后的解析后端（PyInstaller 产物，由 npm run freeze:backend 生成，不入库）
+python/dist/
+python/build/
+.pyinstaller_build/
 
 # IDE / 编辑器
 .idea/
