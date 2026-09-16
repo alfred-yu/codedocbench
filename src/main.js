@@ -910,6 +910,24 @@ async function ensureParsed(path) {
   }
 }
 
+// 带并发上限的批量映射：避免对大量文件同时发起请求导致资源风暴。
+// 即使 daemon 失效并回退到单次子进程调用，也不会一次性拉起 N 个进程。
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const idx = cursor++;
+        results[idx] = await fn(items[idx]);
+      }
+    }
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 function dataSectionNames(res, key) {
   if (!res || res.type === "error") return [];
   const byKey = {
@@ -945,7 +963,8 @@ async function refreshAllFileData() {
       if (n.children) walk(n.children);
     });
   walk(docTree);
-  await Promise.all(paths.map((p) => ensureParsed(p)));
+  // 并发上限 16：daemon 内部 8 worker 并发，前端限 16 路双保险，杜绝进程风暴
+  await mapWithConcurrency(paths, 16, (p) => ensureParsed(p));
   renderDocTree();
 }
 

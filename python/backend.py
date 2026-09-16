@@ -834,8 +834,102 @@ def _init_utf8_stdio() -> None:
             pass
 
 
+def run_daemon() -> int:
+    """常驻服务模式：在 127.0.0.1 动态端口监听，用线程池并发处理解析请求。
+
+    这是「彻底解决大型项目卡顿」的核心：一个进程常驻，复用 Python 解释器，
+    避免对每个文件都 fork 一次子进程（onedir 每次也需重新加载运行时）。
+
+    启动后向 stdout 输出一行握手 JSON（仅此一行，之后 stdout 不再使用）：
+        {"ready": true, "port": <int>, "token": "<hex>"}
+    Rust 端读取该行拿到端口与令牌，之后每个连接首行发送令牌校验，防止本机
+    其它进程注入请求。
+
+    连接内行协议（每行一个 JSON）：
+        client -> {"token": "<hex>"}
+        client -> {"mode": "scan_dir"|"parse_file", "path": "..."}
+        server -> {"result": {<解析结果>}}  或  {"error": "<msg>"}
+    """
+    import socket
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import secrets
+
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))  # 系统分配空闲端口，避免冲突
+        srv.listen(128)
+        port = srv.getsockname()[1]
+    except OSError as e:
+        print(json.dumps({"ready": False, "error": f"daemon 绑定端口失败: {e}"},
+                         ensure_ascii=False))
+        return 1
+
+    token = secrets.token_hex(8)
+    print(json.dumps({"ready": True, "port": port, "token": token},
+                     ensure_ascii=False), flush=True)  # 唯一的 stdout 输出
+
+    def handle_client(conn: "socket.socket") -> None:
+        try:
+            conn.settimeout(30)
+            with conn:
+                f = conn.makefile("rwb", buffering=0)
+                # 1) 校验令牌
+                tok_line = f.readline()
+                if not tok_line:
+                    return
+                try:
+                    tok = json.loads(tok_line.decode("utf-8"))
+                except Exception:
+                    return
+                if tok.get("token") != token:
+                    try:
+                        f.write(b'{"error":"bad token"}\n')
+                    except Exception:
+                        pass
+                    return
+                # 2) 处理请求（复用现有纯函数 scan_dir / parse_file）
+                req_line = f.readline()
+                if not req_line:
+                    return
+                try:
+                    req = json.loads(req_line.decode("utf-8"))
+                except Exception as e:
+                    f.write((json.dumps({"error": f"请求解析失败: {e}"},
+                                        ensure_ascii=False) + "\n").encode("utf-8"))
+                    return
+                mode = req.get("mode", "")
+                path = req.get("path", "")
+                if mode == "scan_dir":
+                    result = scan_dir(path)
+                elif mode == "parse_file":
+                    result = parse_file(path)
+                else:
+                    result = {"type": "error", "message": f"未知模式: {mode}"}
+                f.write((json.dumps({"result": result},
+                                   ensure_ascii=False) + "\n").encode("utf-8"))
+        except Exception as e:
+            try:
+                conn.sendall((json.dumps({"error": str(e)},
+                                        ensure_ascii=False) + "\n").encode("utf-8"))
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                break
+            pool.submit(handle_client, conn)
+    return 0
+
+
 def main(argv) -> int:
     _init_utf8_stdio()
+    if len(argv) >= 2 and argv[1] == "daemon":
+        return run_daemon()
     if len(argv) < 3:
         print(json.dumps({
             "type": "error",

@@ -1,15 +1,40 @@
-use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // 预启动常驻 daemon（失败不阻断，首次调用时会懒启动）
+            let _ = ensure_daemon(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-        scan_dir, parse_file, save_file, read_file, file_mtime
-    ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+            scan_dir, parse_file, save_file, read_file, file_mtime
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app, event| {
+        // 应用退出时回收 daemon 子进程，避免残留
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit { .. }
+        ) {
+            if let Some(cell) = DAEMON.get() {
+                if let Ok(mut g) = cell.lock() {
+                    if let Some(mut st) = g.take() {
+                        let _ = st.child.kill();
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// 将字节数据写入指定路径（用于导出 Excel 等文件）。
@@ -59,14 +84,32 @@ enum BackendTarget {
     Source(std::path::PathBuf),
 }
 
-/// 以子进程方式调用解析后端并解析其 stdout JSON。
+/// 常驻 daemon 状态：连接地址、握手令牌、子进程句柄。
+struct DaemonState {
+    addr: String,
+    token: String,
+    child: std::process::Child,
+}
+
+/// 全局 daemon 状态（懒启动、跨命令线程共享）。
+static DAEMON: OnceLock<Mutex<Option<DaemonState>>> = OnceLock::new();
+
+/// 解析入口：优先走常驻 daemon（最快、内存可控），失败再 fallback 到单次子进程调用。
+///
 /// 任一环节失败都会返回 `{"type":"error","message":...}`，保证前端可读且不 panic。
 fn run_backend(mode: &str, path: &str, app: &tauri::AppHandle) -> serde_json::Value {
+    // 1) 优先常驻 daemon：一次进程启动，N 个文件复用，彻底消除进程风暴
+    if let Some((addr, token)) = ensure_daemon(app) {
+        if let Ok(v) = call_daemon(&addr, &token, mode, path) {
+            return v;
+        }
+        // daemon 调用失败（崩溃/端口失效）则回退，保证可用性
+    }
+    // 2) fallback：单次子进程调用（原有逻辑，作为 daemon 不可用时的兜底）
     let target = match resolve_backend(app) {
         Ok(t) => t,
         Err(msg) => return err_json(&msg),
     };
-
     let output = match &target {
         BackendTarget::Binary(exe) => run_binary(exe, &[mode, path]),
         BackendTarget::Source(script) => {
@@ -90,6 +133,136 @@ fn run_backend(mode: &str, path: &str, app: &tauri::AppHandle) -> serde_json::Va
         Ok(v) => v,
         Err(e) => err_json(&format!("解析后端输出失败: {e}")),
     }
+}
+
+/// 懒启动并获取 daemon 的 (地址, 令牌)。
+/// 已启动且存活则直接复用；否则 spawn 新 daemon 并读取握手端口。
+fn ensure_daemon(app: &tauri::AppHandle) -> Option<(String, String)> {
+    let cell = DAEMON.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().ok()?;
+    // 已存在且子进程仍存活
+    if let Some(st) = guard.as_mut() {
+        if st.child.try_wait().ok().flatten().is_none() {
+            return Some((st.addr.clone(), st.token.clone()));
+        }
+        // 已死，清理后重建
+        *guard = None;
+    }
+    match spawn_daemon(app) {
+        Ok(st) => {
+            let addr = st.addr.clone();
+            let token = st.token.clone();
+            *guard = Some(st);
+            Some((addr, token))
+        }
+        Err(_) => None,
+    }
+}
+
+/// 启动常驻 daemon 子进程，读取握手端口与令牌。
+fn spawn_daemon(app: &tauri::AppHandle) -> Result<DaemonState, String> {
+    let target = resolve_backend(app)?;
+    let (program, args): (std::ffi::OsString, Vec<std::ffi::OsString>) = match &target {
+        BackendTarget::Binary(exe) => (exe.as_os_str().to_os_string(), vec!["daemon".into()]),
+        BackendTarget::Source(script) => {
+            let python = find_python();
+            (python.into(), vec![script.as_os_str().to_os_string(), "daemon".into()])
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = Command::new(program);
+    cmd.env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout(Stdio::piped()) // 首行握手：{"ready":true,"port":P,"token":T}
+        .stderr(Stdio::null()); // daemon 日志不污染前端；解析错误经协议返回
+    for a in &args {
+        cmd.arg(a);
+    }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动解析后端 daemon 失败: {e}"))?;
+    let stdout = child.stdout.take().ok_or("无法获取 daemon 标准输出")?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("读取 daemon 握手失败: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(line.trim())
+        .map_err(|e| format!("解析 daemon 握手失败: {e}"))?;
+    if v.get("ready").and_then(|x| x.as_bool()) != Some(true) {
+        let _ = child.kill();
+        return Err(format!(
+            "daemon 启动未就绪: {}",
+            v.get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("未知错误")
+        ));
+    }
+    let port = v
+        .get("port")
+        .and_then(|x| x.as_u64())
+        .ok_or("daemon 握手缺少 port")? as u16;
+    let token = v
+        .get("token")
+        .and_then(|x| x.as_str())
+        .ok_or("daemon 握手缺少 token")?
+        .to_string();
+    Ok(DaemonState {
+        addr: format!("127.0.0.1:{port}"),
+        token,
+        child,
+    })
+}
+
+/// 经 TCP 调用 daemon：发送令牌 + 请求，读取结果 JSON。
+fn call_daemon(
+    addr: &str,
+    token: &str,
+    mode: &str,
+    path: &str,
+) -> Result<serde_json::Value, String> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| format!("连接 daemon 失败: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .ok();
+    // 1) 令牌校验行
+    let tok_line = serde_json::json!({ "token": token }).to_string() + "\n";
+    stream
+        .write_all(tok_line.as_bytes())
+        .map_err(|e| format!("发送令牌失败: {e}"))?;
+    // 2) 请求行
+    let req = serde_json::json!({ "mode": mode, "path": path }).to_string() + "\n";
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("发送请求失败: {e}"))?;
+    stream.flush().ok();
+    // 3) 读取响应行
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("读取 daemon 响应失败: {e}"))?;
+    if line.trim().is_empty() {
+        return Err("daemon 返回空响应（可能已崩溃）".to_string());
+    }
+    let v: serde_json::Value = serde_json::from_str(line.trim())
+        .map_err(|e| format!("解析 daemon 响应失败: {e}"))?;
+    if let Some(err) = v.get("error") {
+        return Err(err.as_str().unwrap_or("daemon error").to_string());
+    }
+    Ok(v
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
 }
 
 /// 运行时解析解析后端。
