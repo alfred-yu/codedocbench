@@ -456,6 +456,7 @@ function nowText() {
 
 /* ---- 低层需求 Excel 加载与列选择 ---- */
 const relPickBtn = document.getElementById("rel-pick-btn");
+const relLoadingEl = document.getElementById("rel-loading");
 const relFileName = document.getElementById("rel-file-name");
 const relColChapter = document.getElementById("rel-col-chapter");
 const relColId = document.getElementById("rel-col-id");
@@ -467,6 +468,56 @@ let relColNames = []; // 表头列名
 let relFilePath = null; // 当前关联的低层需求文件路径（随项目持久化）
 let relFileMtime = null; // 关联时记录的文件 mtime，用于检测磁盘文件被外部修改
 
+// 解析低层需求 Excel 字节为数据行。
+// 优先用 Web Worker（后台线程，避免大文件冻结 UI，P2 修复）；
+// 当环境无 Worker（如 Node 冒烟测试、老旧 webview）时回退主线程同步解析，保证功能不破。
+async function parseLlrBytes(bytes) {
+  if (typeof Worker !== "undefined") {
+    return await new Promise((resolve, reject) => {
+      let worker;
+      try {
+        worker = new Worker(new URL("./xlsx-worker.js", import.meta.url), {
+          type: "module",
+        });
+      } catch (e) {
+        // Worker 构造失败 → 回退主线程同步解析
+        const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        return resolve(XLSX.utils.sheet_to_json(sheet, { defval: "" }));
+      }
+      const msgId = Date.now() + ":" + Math.random();
+      const onMsg = (ev) => {
+        if (!ev.data || ev.data.msgId !== msgId) return;
+        worker.removeEventListener("message", onMsg);
+        worker.terminate();
+        if (ev.data.ok) resolve(ev.data.rows);
+        else reject(new Error(ev.data.error || "解析失败"));
+      };
+      worker.addEventListener("message", onMsg);
+      worker.onerror = (err) => {
+        worker.terminate();
+        reject(new Error(err.message || "Worker 解析出错"));
+      };
+      const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      worker.postMessage({ bytes: u8, msgId });
+    });
+  }
+  // 回退：主线程同步解析（无 Worker 环境）
+  const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: "" });
+}
+
+// 解析期间的 loading 指示：旋转 spinner + 禁用按钮防重复触发 + 状态条提示（P2）
+function showRelLoading(on, text) {
+  if (relPickBtn) relPickBtn.disabled = on;
+  if (relLoadingEl) relLoadingEl.hidden = !on;
+  if (on) {
+    relFileName.textContent = text || "解析中…";
+    setStatus(text || "正在解析低层需求文件…", false);
+  }
+}
+
 async function loadLlrFile(filePath) {
   // 先取 mtime 再读内容：若两步之间文件被修改，下次新鲜度检查会再触发重读
   let mtime = null;
@@ -475,10 +526,17 @@ async function loadLlrFile(filePath) {
   } catch (e) {
     /* 浏览器 dev 环境无文件命令，退化为不检查新鲜度 */
   }
-  const bytes = await invoke("read_file", { path: filePath });
-  const wb = XLSX.read(new Uint8Array(bytes), { type: "array" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  // P2：大文件解析移到 Worker，期间给出 loading 提示并禁用按钮防重复触发
+  showRelLoading(true, "正在解析低层需求文件…");
+  let rows;
+  try {
+    const bytes = await invoke("read_file", { path: filePath });
+    rows = await parseLlrBytes(bytes);
+  } catch (err) {
+    showRelLoading(false);
+    throw err; // 交由调用方处理（rel-pick / restore / refresh 各自有 catch）
+  }
+  showRelLoading(false);
   if (!rows.length || typeof rows[0] !== "object") {
     throw new Error("未解析到表头与数据");
   }

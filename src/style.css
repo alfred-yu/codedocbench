@@ -1045,6 +1045,33 @@ body {
   line-height: 1.5;
 }
 
+/* 解析低层需求 Excel 时的 loading 指示（P2：大文件不再无提示） */
+.rel-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.rel-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--text-2);
+  border-radius: 50%;
+  animation: rel-spin 0.7s linear infinite;
+}
+.rel-loading[hidden] {
+  display: none;
+}
+@keyframes rel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 #rel-preview-panel {
   flex: 1;
   min-width: 0;
