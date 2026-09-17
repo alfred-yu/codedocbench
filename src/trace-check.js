@@ -265,22 +265,58 @@ export function buildTraceReportSheets(report, meta = {}) {
   ];
 }
 
-/* 编码为工作簿：XLSX 由调用方注入（与 encodeLinkSheet 同款做法，纯模块不硬依赖 xlsx）。
-   加粗规则：各 sheet 首行 + 汇总页的分组标题行（视角一/视角二/按数据章节/附带核对） */
-export function encodeTraceWorkbook(report, XLSX, meta = {}) {
-  const wb = XLSX.utils.book_new();
-  for (const { name, aoa, cols } of buildTraceReportSheets(report, meta)) {
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = cols;
-    aoa.forEach((row, r) => {
-      const head = String(row[0] ?? "");
-      if (r !== 0 && !/^(视角[一二]|按数据章节|附带核对)/.test(head)) return;
-      for (let c = 0; c < row.length; c++) {
-        const cell = ws[XLSX.utils.encode_cell({ r, c })];
-        if (cell) cell.s = { font: { bold: true } };
-      }
-    });
-    XLSX.utils.book_append_sheet(wb, ws, name);
-  }
-  return wb;
+/* ---------- 图表描述（纯数据，不依赖任何 xlsx / 渲染库） ----------
+   把「校验汇总」页里适合可视化的汇总数字抽成图表语义：4 张图——
+   ① 视角一环形图：已关联 / 空 Parent ID
+   ② 按数据章节柱状图：各章空 Parent ID 数
+   ③ 视角二环形图：已引用 / 未被引用
+   ④ 附带核对柱状图：悬空引用 / 重复追溯 / 口径差异 项数
+   返回 [{ id, kind, title, categories, values, anchor, size }]。
+   - kind：'doughnut' | 'bar'，供浏览器侧选择 Canvas 画法
+   - categories / values：纯数字与标签，便于回归断言（与界面两视角同一坐标系）
+   - anchor：图表在「校验汇总」sheet 中的左上角单元格（列 F 起，避免与 A~D 表格重叠）
+   - size：{ cols, rows } 图表占据的单元格跨度（exceljs.addImage 锚点用）
+   浏览器侧（src/trace-report-exceljs.js）据此用 Canvas 现画 PNG 并嵌入工作簿，
+   因此本函数保持零依赖，Node 回归可直接断言。 */
+export function buildTraceChartSpecs(report) {
+  const { code, requirement, extra } = report;
+  const sections = code.sections || [];
+  return [
+    {
+      id: "codeOverview",
+      kind: "doughnut",
+      title: "视角一 · 代码文档：Parent ID 关联覆盖",
+      categories: ["已关联 Parent ID", "空 Parent ID"],
+      values: [code.filledParent, code.emptyParent],
+      anchor: "F3",
+      size: { cols: 8, rows: 12 },
+    },
+    {
+      id: "codeBySection",
+      kind: "bar",
+      title: "按数据章节：空 Parent ID 数",
+      categories: sections.map((s) => s.title),
+      values: sections.map((s) => s.empty),
+      anchor: "F15",
+      size: { cols: 10, rows: 12 },
+    },
+    {
+      id: "reqOverview",
+      kind: "doughnut",
+      title: "视角二 · 低层需求：引用覆盖",
+      categories: ["已引用", "未被引用"],
+      values: [requirement.referenced, requirement.orphaned],
+      anchor: "F27",
+      size: { cols: 8, rows: 12 },
+    },
+    {
+      id: "extra",
+      kind: "bar",
+      title: "附带核对：异常项数",
+      categories: ["悬空引用", "重复追溯", "口径差异"],
+      values: [extra.dangling.length, extra.duplicated.length, extra.nonRequirementRefs.length],
+      anchor: "F39",
+      size: { cols: 10, rows: 11 },
+    },
+  ];
 }

@@ -10,8 +10,10 @@ import {
   encodeLinkSheet,
   stripIdPrefix,
 } from "./link-split.js";
-// 一致性校验：代码文档 ↔ 低层需求的双向追溯核对 + 报告工作簿编码（纯逻辑，可脱离界面回归）
-import { auditTrace, encodeTraceWorkbook } from "./trace-check.js";
+// 一致性校验：代码文档 ↔ 低层需求的双向追溯核对（纯逻辑，可脱离界面回归）
+import { auditTrace } from "./trace-check.js";
+// 报告工作簿编码（ExcelJS 版：数据 sheet + 汇总页嵌入图表 PNG）
+import { encodeTraceWorkbook } from "./trace-report-exceljs.js";
 
 // 窗口标题：版本号由 Vite 从 package.json 注入（见 vite.config.js 的 define）
 document.title = `CodeDocBench (Powered By 余绍健, v${__APP_VERSION__})`;
@@ -416,11 +418,9 @@ async function exportTraceReport() {
     nameSet: new Set(fnNames),
   });
 
-  const wb = encodeTraceWorkbook(report, XLSX, { generatedAt: nowText() });
-  const b64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const wb = await encodeTraceWorkbook(report, { generatedAt: nowText() });
+  const buf = await wb.xlsx.writeBuffer();
+  const bytes = new Uint8Array(buf);
 
   const filePath = await save({
     title: "导出一致性检查报告",

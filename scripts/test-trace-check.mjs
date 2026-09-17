@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const XLSX = require("xlsx-js-style");
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const { auditTrace, scanRequirementBlocks, buildTraceReportSheets, encodeTraceWorkbook } = await import(
+const { auditTrace, scanRequirementBlocks, buildTraceReportSheets, buildTraceChartSpecs } = await import(
   "file:///" + path.join(ROOT, "src", "trace-check.js").replace(/\\/g, "/")
 );
 
@@ -432,17 +432,20 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   ok("孤儿明细：未归属块时给占位", String(req7[1][2]).includes("未归属"));
   eq("孤儿明细：低层需求行号", req7[1][3], 1);
 
-  // 工作簿编码：sheet 顺序 + 表头加粗 + 写盘读回一致
-  const wb = encodeTraceWorkbook(realReport, XLSX, { generatedAt: "2026-09-15 00:00" });
-  eq("工作簿 sheet 顺序", wb.SheetNames, ["校验汇总", "代码侧-ParentID空值", "需求侧-未被引用"]);
-  const isBold = (cell) => !!(cell && cell.s && cell.s.font && cell.s.font.bold);
-  ok("明细页表头加粗", isBold(wb.Sheets["代码侧-ParentID空值"]["A1"]));
-  ok("汇总页视角标题行加粗", isBold(wb.Sheets["校验汇总"]["A4"]));
-  const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
-  const back = XLSX.read(buf, { type: "buffer" });
-  eq("写盘后读回 sheet 一致", back.SheetNames, wb.SheetNames);
-  const backSum = XLSX.utils.sheet_to_json(back.Sheets["校验汇总"], { header: 1, defval: "" });
-  eq("读回：视角一空值", backSum.find((r) => r[0] === "Parent ID 为空")[1], 3);
+  // 图表描述（纯数据，可断言；与界面两视角同一坐标系，真实数据：视角一 已关联62/空3、视角二 已引用271/遗漏0、附带核对 0/0/0）
+  const specs = buildTraceChartSpecs(realReport);
+  eq("图表数量", specs.length, 4);
+  eq("图表 id", specs.map((s) => s.id), ["codeOverview", "codeBySection", "reqOverview", "extra"]);
+  const byId = Object.fromEntries(specs.map((s) => [s.id, s]));
+  eq("图表类型", [byId.codeOverview.kind, byId.codeBySection.kind, byId.reqOverview.kind, byId.extra.kind],
+    ["doughnut", "bar", "doughnut", "bar"]);
+  eq("视角一环形图：已关联 / 空 Parent ID", byId.codeOverview.values, [62, 3]);
+  eq("视角一环形图：标签", byId.codeOverview.categories, ["已关联 Parent ID", "空 Parent ID"]);
+  eq("视角二环形图：已引用 / 未被引用", byId.reqOverview.values, [271, 0]);
+  eq("按数据章节柱状图：标签为各章标题", byId.codeBySection.categories, realReport.code.sections.map((s) => s.title));
+  eq("按数据章节柱状图：空值数", byId.codeBySection.values, realReport.code.sections.map((s) => s.empty));
+  eq("附带核对柱状图：0 / 0 / 0", byId.extra.values, [0, 0, 0]);
+  ok("每个图表均有锚点单元格（列 F 起）", specs.every((s) => /^[A-Z]+\d+$/.test(s.anchor)));
 }
 
 console.log("");
