@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  body{margin:0;background:#f3f4f6;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;}
+  .wrap{padding:28px;display:flex;flex-wrap:wrap;gap:18px;}
+  .cell{background:#fff;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.08);padding:6px;}
+  canvas{display:block;width:460px;height:240px;}
+</style>
+</head>
+<body>
+<div class="wrap" id="grid"></div>
+<script type="module">
+import { renderChartCanvas } from "/src/trace-chart-canvas.js";
+const specs = [
+  { id:"codeOverview", kind:"doughnut", title:"视角一 · 代码文档：Parent ID 关联覆盖",
+    categories:["已关联 Parent ID","空 Parent ID"], values:[62,3], anchor:"F3", size:{cols:8,rows:12} },
+  { id:"codeBySection", kind:"bar", title:"按数据章节：空 Parent ID 数",
+    categories:["Function Definition","Global Variable","Macro","Constant","Type"], values:[1,3,2,0,0], anchor:"F15", size:{cols:10,rows:12} },
+  { id:"reqOverview", kind:"doughnut", title:"视角二 · 低层需求：引用覆盖",
+    categories:["已引用","未被引用"], values:[271,0], anchor:"F27", size:{cols:8,rows:12} },
+  { id:"extra", kind:"bar", title:"附带核对：异常项数",
+    categories:["悬空引用","重复追溯","口径差异"], values:[2,1,3], anchor:"F39", size:{cols:10,rows:11} },
+];
+const grid = document.getElementById("grid");
+for (const s of specs) {
+  const cell = document.createElement("div");
+  cell.className = "cell";
+  cell.appendChild(renderChartCanvas(s));
+  grid.appendChild(cell);
+}
+</script>
+</body>
+</html>
