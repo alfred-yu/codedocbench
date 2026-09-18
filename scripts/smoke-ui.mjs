@@ -299,6 +299,10 @@ await settle(400);
 console.log("[2/7] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
 if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
 if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
+// P2 回归：LLR 恢复加载走 showRelLoading(true)→(false)，状态条提示必须在复位时清掉
+// （否则「正在解析低层需求文件…」永远挂在左下角——真机曾复现）
+const statusText = () => String((registry.get("status") && registry.get("status").textContent) || "");
+if (statusText().includes("正在解析")) fail.push(`解析完成后状态条未复位：「${statusText()}」`);
 
 console.log("[3/7] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");

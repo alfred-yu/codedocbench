@@ -515,6 +515,9 @@ function showRelLoading(on, text) {
   if (on) {
     relFileName.textContent = text || "解析中…";
     setStatus(text || "正在解析低层需求文件…", false);
+  } else {
+    // 置位时写进状态条的提示必须在复位时清掉，否则「正在解析…」会永远留在左下角
+    setStatus("");
   }
 }
 
@@ -568,6 +571,7 @@ relPickBtn.addEventListener("click", async () => {
     relRows = [];
     relColNames = [];
     relFileName.textContent = "解析失败：" + err;
+    setStatus(`低层需求解析失败: ${err}`, true);
   }
 });
 
