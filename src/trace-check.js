@@ -281,42 +281,57 @@ export function buildTraceReportSheets(report, meta = {}) {
 export function buildTraceChartSpecs(report) {
   const { code, requirement, extra } = report;
   const sections = code.sections || [];
-  return [
-    {
-      id: "codeOverview",
-      kind: "doughnut",
-      title: "视角一 · 代码文档：Parent ID 关联覆盖",
-      categories: ["已关联 Parent ID", "空 Parent ID"],
-      values: [code.filledParent, code.emptyParent],
-      anchor: "F3",
-      size: { cols: 8, rows: 12 },
-    },
-    {
-      id: "codeBySection",
-      kind: "bar",
-      title: "按数据章节：空 Parent ID 数",
-      categories: sections.map((s) => s.title),
-      values: sections.map((s) => s.empty),
-      anchor: "F15",
-      size: { cols: 10, rows: 12 },
-    },
-    {
-      id: "reqOverview",
-      kind: "doughnut",
-      title: "视角二 · 低层需求：引用覆盖",
-      categories: ["已引用", "未被引用"],
-      values: [requirement.referenced, requirement.orphaned],
-      anchor: "F27",
-      size: { cols: 8, rows: 12 },
-    },
-    {
-      id: "extra",
-      kind: "bar",
-      title: "附带核对：异常项数",
-      categories: ["悬空引用", "重复追溯", "口径差异"],
-      values: [extra.dangling.length, extra.duplicated.length, extra.nonRequirementRefs.length],
-      anchor: "F39",
-      size: { cols: 10, rows: 11 },
-    },
-  ];
+  /* 布局：图表不与表格并排（右侧 F 列起会压住表格右侧数据列），
+     而是「上文字、下图片」——排在「校验汇总」表格末尾下方竖排。
+     起始行按汇总表实际行数动态计算（空 1 行起），图与图之间空 1 行，避免以后表格变长被盖。 */
+  const sumRows = buildTraceReportSheets(report).find((s) => s.name === "校验汇总").aoa.length;
+  let row = sumRows + 2;
+  const anchorAt = () => {
+    const a = `A${row}`;
+    return a;
+  };
+  const advance = (spec) => {
+    row += spec.size.rows + 1;
+  };
+  const codeOverview = {
+    id: "codeOverview",
+    kind: "doughnut",
+    title: "视角一 · 代码文档：Parent ID 关联覆盖",
+    categories: ["已关联 Parent ID", "空 Parent ID"],
+    values: [code.filledParent, code.emptyParent],
+    anchor: anchorAt(),
+    size: { cols: 8, rows: 12 },
+  };
+  advance(codeOverview);
+  const codeBySection = {
+    id: "codeBySection",
+    kind: "bar",
+    title: "按数据章节：空 Parent ID 数",
+    categories: sections.map((s) => s.title),
+    values: sections.map((s) => s.empty),
+    anchor: anchorAt(),
+    size: { cols: 10, rows: 12 },
+  };
+  advance(codeBySection);
+  const reqOverview = {
+    id: "reqOverview",
+    kind: "doughnut",
+    title: "视角二 · 低层需求：引用覆盖",
+    categories: ["已引用", "未被引用"],
+    values: [requirement.referenced, requirement.orphaned],
+    anchor: anchorAt(),
+    size: { cols: 8, rows: 12 },
+  };
+  advance(reqOverview);
+  const extraChart = {
+    id: "extra",
+    kind: "bar",
+    title: "附带核对：异常项数",
+    categories: ["悬空引用", "重复追溯", "口径差异"],
+    values: [extra.dangling.length, extra.duplicated.length, extra.nonRequirementRefs.length],
+    anchor: anchorAt(),
+    size: { cols: 10, rows: 11 },
+  };
+  advance(extraChart);
+  return [codeOverview, codeBySection, reqOverview, extraChart];
 }
