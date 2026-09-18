@@ -194,9 +194,12 @@ function drawBar(ctx, W, H, spec) {
   ctx.stroke();
 }
 
+/* 图表逻辑尺寸（CSS 像素）：ext 固定尺寸嵌入 Excel 时引用，保证图片不随单元格拉伸变形 */
+export const CHART_SIZE = { width: 460, height: 240 };
+
 /* 同步绘制并返回 canvas 元素（供预览页直接挂载，截图无需等异步） */
 export function renderChartCanvas(spec) {
-  const W = 460, H = 240;
+  const W = CHART_SIZE.width, H = CHART_SIZE.height;
   const { canvas, ctx } = makeCanvas(W, H);
   card(ctx, W, H);
   title(ctx, W, spec.title);

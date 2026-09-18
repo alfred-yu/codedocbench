@@ -6,7 +6,7 @@
    本模块只在浏览器（WebView2）运行，依赖 document.createElement('canvas')；Node 回归不引入它。 */
 import ExcelJS from "exceljs";
 import { buildTraceReportSheets, buildTraceChartSpecs } from "./trace-check.js";
-import { renderChartPng } from "./trace-chart-canvas.js";
+import { renderChartPng, CHART_SIZE } from "./trace-chart-canvas.js";
 
 /* 单元格引用（如 "F3"）→ { col, row }（0-based），供 exceljs.addImage 锚点 */
 function refToRC(ref) {
@@ -38,11 +38,13 @@ export async function encodeTraceWorkbook(report, meta = {}) {
       for (const spec of buildTraceChartSpecs(report)) {
         const b64 = renderChartPng(spec);
         const tl = refToRC(spec.anchor);
-        // 正确姿势：workbook 级先注册图片拿到 imageId，再 worksheet 级按 id 引用
+        // 正确姿势：workbook 级先注册图片拿到 imageId，再 worksheet 级按 id 引用。
+        // 用 ext 固定像素尺寸（oneCellAnchor），不传 br——否则 Excel 按 tl~br 单元格区域
+        // 拉伸图片，区域比例与图片不符时会水平/垂直变形（真机已踩坑）。
         const imageId = wb.addImage({ base64: b64, extension: "png" });
         ws.addImage(imageId, {
           tl: { col: tl.col, row: tl.row },
-          br: { col: tl.col + spec.size.cols, row: tl.row + spec.size.rows },
+          ext: { width: CHART_SIZE.width, height: CHART_SIZE.height },
         });
       }
     }

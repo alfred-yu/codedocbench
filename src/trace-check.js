@@ -291,7 +291,9 @@ export function buildTraceChartSpecs(report) {
     return a;
   };
   const advance = (spec) => {
-    row += spec.size.rows + 1;
+    /* rows 只作布局估算（图片实际高 240px ≈ 12 行 @20px/行）；+2 行余量防不同软件
+       行高差异（WPS 默认行高更矮，步进不足会贴叠上一张图） */
+    row += spec.size.rows + 2;
   };
   const codeOverview = {
     id: "codeOverview",
