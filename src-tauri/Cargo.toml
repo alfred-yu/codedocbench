@@ -1,6 +1,6 @@
 [package]
 name = "codedocbench"
-version = "0.1.0"
+version = "0.1.2"
 description = "A blank-window desktop application built with Tauri and Python"
 authors = ["you"]
 edition = "2021"
