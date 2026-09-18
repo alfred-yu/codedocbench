@@ -81,9 +81,12 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
 
   /* ---------- ① 代码侧：Source Code 行的 Parent ID 空值，按数据章节分组 ---------- */
   const sectionMap = new Map();
+  const sourceRows = []; // 全量 Source Code 行明细（报告「代码侧」sheet 用，按文档顺序）
   let sourceTotal = 0;
   let emptyParent = 0;
+  let curSectionNum = ""; // 最近的章节标题行编号（数据行 num 为空，章节号从所属章节标题行取）
   safeRows.forEach((row, i) => {
+    if (!norm(row.objectType) && norm(row.num)) curSectionNum = norm(row.num);
     if (row.objectType !== "Source Code") return;
     sourceTotal += 1;
     const key = row.sectionKey || "(未分章)";
@@ -91,12 +94,13 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
       sectionMap.set(key, { key, title: row.sectionTitle || key, total: 0, empty: 0, details: [] });
     }
     const g = sectionMap.get(key);
+    const parent = norm(row.parent);
+    // 全量明细：序号与生成文档页「序号」列、链接文件「链出 ID」同一坐标系，便于回表定位。
+    sourceRows.push({ index: i + 1, sectionNum: curSectionNum, title: row.title, parent });
     g.total += 1;
-    if (norm(row.parent)) return;
+    if (parent) return;
     g.empty += 1;
     emptyParent += 1;
-    // 序号与生成文档页「序号」列、链接文件「链出 ID」同一坐标系，便于回表定位。
-    // 全量保留（报告是导出文件，不进 DOM，无需截断）
     g.details.push({ index: i + 1, title: row.title });
   });
 
@@ -172,6 +176,7 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
       filledParent: sourceTotal - emptyParent,
       // 占比分母 = Source Code 行数
       emptyRatio: ratio(emptyParent, sourceTotal),
+      sourceRows,
       sections: [...sectionMap.values()].map((s) => ({
         ...s,
         emptyRatio: ratio(s.empty, s.total),
@@ -191,7 +196,7 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
 
 /* ---------- 报告导出：把核对结果编成 Excel 工作簿 ----------
    三个 sheet：校验汇总（两视角统计 + 占比 + 附带核对 + 结论）/
-   代码侧-ParentID空值（章节 · 符号名 · 文档序号）/
+   代码侧-SourceCode明细（全量 Source Code 行：文档序号 · 章节号 · 需求内容 · Parent ID，空值行 exceljs 侧着色）/
    需求侧-未被引用（需求 ID · 需求内容 · 所属需求块 · 低层需求行号）。
    明细全量列出 —— 报告是导出文件，不是 DOM，不设条数上限。 */
 
@@ -243,10 +248,12 @@ export function buildTraceReportSheets(report, meta = {}) {
     ["结论", conclusion],
   ];
 
-  const codeDetail = [["数据章节", "符号名", "文档序号"]];
-  for (const s of code.sections)
-    for (const d of s.details) codeDetail.push([`${s.title} 章`, d.title, d.index]);
-  if (codeDetail.length === 1) codeDetail.push(["（无空 Parent ID 的 Source Code 行）", "", ""]);
+  /* 代码侧 sheet：全量 Source Code 行（不只空值行），四列 ——
+     文档序号（与链接文件「链出 ID」同一坐标系）/ 章节号（取自所属章节标题行）/
+     需求内容（符号名）/ Parent ID 原值。空 Parent ID 行由 exceljs 侧按第 4 列着色。 */
+  const codeDetail = [["文档序号", "章节号", "需求内容", "Parent ID"]];
+  for (const r of code.sourceRows) codeDetail.push([r.index, r.sectionNum, r.title, r.parent]);
+  if (codeDetail.length === 1) codeDetail.push(["（无 Source Code 行）", "", "", ""]);
 
   const reqDetail = [["需求 ID", "需求内容", "所属需求块", "低层需求行号"]];
   for (const o of requirement.orphans)
@@ -260,7 +267,7 @@ export function buildTraceReportSheets(report, meta = {}) {
 
   return [
     { name: "校验汇总", aoa: summary, cols: [{ wch: 46 }, { wch: 18 }, { wch: 12 }, { wch: 12 }] },
-    { name: "代码侧-ParentID空值", aoa: codeDetail, cols: [{ wch: 28 }, { wch: 44 }, { wch: 12 }] },
+    { name: "代码侧-SourceCode明细", aoa: codeDetail, cols: [{ wch: 10 }, { wch: 12 }, { wch: 44 }, { wch: 24 }] },
     { name: "需求侧-未被引用", aoa: reqDetail, cols: [{ wch: 24 }, { wch: 64 }, { wch: 30 }, { wch: 14 }] },
   ];
 }

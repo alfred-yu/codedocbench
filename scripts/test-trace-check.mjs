@@ -389,7 +389,7 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
 console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
 {
   const sheets = buildTraceReportSheets(realReport, { generatedAt: "2026-09-15 00:00" });
-  eq("报告 sheet 名称", sheets.map((s) => s.name), ["校验汇总", "代码侧-ParentID空值", "需求侧-未被引用"]);
+  eq("报告 sheet 名称", sheets.map((s) => s.name), ["校验汇总", "代码侧-SourceCode明细", "需求侧-未被引用"]);
   const [sum, codeDet, reqDet] = sheets.map((s) => s.aoa);
   const val = (label) => {
     const row = sum.find((r) => r[0] === label);
@@ -411,10 +411,14 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   ok("汇总：按数据章节逐章列出", sum.some((r) => r[0] === "Global Variable Definition 章"));
   ok("汇总：Type 章已退出 Source Code 口径", !sum.some((r) => r[0] === "Type Definition 章"));
   ok("汇总：无列映射提示时给（无）", val("列映射提示") === "（无）");
-  // 代码侧明细：全量 3 行（globals 结构性空值），不截断；列与生成文档页序号列对齐
-  eq("代码侧明细行数（全量）", codeDet.length - 1, 3);
-  eq("代码侧明细表头", codeDet[0], ["数据章节", "符号名", "文档序号"]);
-  ok("代码侧明细首行来自 Global 章", String(codeDet[1][0]).startsWith("Global Variable Definition 章"));
+  // 代码侧明细：全量 Source Code 行（65 行，不只空值行），四列；空值行由 exceljs 侧着色
+  eq("代码侧明细行数（全量 Source Code）", codeDet.length - 1, 65);
+  eq("代码侧明细表头", codeDet[0], ["文档序号", "章节号", "需求内容", "Parent ID"]);
+  eq("代码侧明细空值行数与汇总一致", codeDet.slice(1).filter((r) => !String(r[3] ?? "").trim()).length, 3);
+  ok(
+    "代码侧明细文档序号升序（对齐链出 ID 坐标系）",
+    codeDet.slice(1).every((r, i, a) => i === 0 || a[i - 1][0] < r[0])
+  );
   // 需求侧明细：真实数据零遗漏 → 占位行
   eq("需求侧明细：零遗漏时占位行", reqDet[1][0], "（无未被引用的 Requirement）");
 
@@ -431,6 +435,25 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   eq("孤儿明细：内容", req7[1][1], "orphan text");
   ok("孤儿明细：未归属块时给占位", String(req7[1][2]).includes("未归属"));
   eq("孤儿明细：低层需求行号", req7[1][3], 1);
+
+  // 代码侧明细：章节号取自最近的章节标题行；文档序号 = rows 全局序号（对齐链出 ID 坐标系）
+  {
+    const rows8 = [
+      { num: "2", title: "sample.c", objectType: "", parent: "" },
+      { num: "2.1", title: "Global Variable Definition", objectType: "", parent: "" },
+      { num: "", title: "g1", objectType: "Source Code", parent: "R_1", sectionKey: "globals", sectionTitle: "Global Variable Definition" },
+      { num: "2.2", title: "Function Definition", objectType: "", parent: "" },
+      { num: "", title: "fnA", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "Function Definition" },
+    ];
+    const rep8 = auditTrace({ rows: rows8, llrRows: llr7, colMap: COL, nameSet: new Set() });
+    const code8 = buildTraceReportSheets(rep8).find((s) => s.name === "代码侧-SourceCode明细").aoa;
+    eq("代码侧明细：全量 Source Code 行数", code8.length - 1, 2);
+    eq("章节号取自所属章节标题行", code8[1][1], "2.1");
+    eq("章节号随文档推进更新", code8[2][1], "2.2");
+    eq("文档序号 = rows 全局序号（对齐链出 ID）", [code8[1][0], code8[2][0]], [3, 5]);
+    eq("Parent ID 原值列入", code8[1][3], "R_1");
+    eq("空 Parent ID 原样留空（着色由 exceljs 侧做）", code8[2][3], "");
+  }
 
   // 图表描述（纯数据，可断言；与界面两视角同一坐标系，真实数据：视角一 已关联62/空3、视角二 已引用271/遗漏0、附带核对 0/0/0）
   const specs = buildTraceChartSpecs(realReport);

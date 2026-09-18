@@ -437,7 +437,7 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
     if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) fail.push("一致性检查报告不是 zip/xlsx 字节");
     const wb = XLSX.read(bytes, { type: "array" });
     const names = wb.SheetNames;
-    if (JSON.stringify(names) !== JSON.stringify(["校验汇总", "代码侧-ParentID空值", "需求侧-未被引用"]))
+    if (JSON.stringify(names) !== JSON.stringify(["校验汇总", "代码侧-SourceCode明细", "需求侧-未被引用"]))
       fail.push("报告 sheet 结构不符：" + names.join(", "));
     // 汇总页：两个视角的「分母 · 命中 · 占比」
     const sum = XLSX.utils.sheet_to_json(wb.Sheets["校验汇总"], { header: 1, defval: "" });
@@ -453,10 +453,14 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
     if (val("未被引用") !== ORPHAN_COUNT) fail.push(`汇总页视角二遗漏不符（应 ${ORPHAN_COUNT}）`);
     if (val("遗漏占比") !== EXPECT_REQ_RATIO) fail.push(`汇总页视角二占比不符（应 ${EXPECT_REQ_RATIO}）`);
     if (!String(val("结论") || "").includes(`视角二遗漏 ${ORPHAN_COUNT} 条`)) fail.push("汇总页缺少结论行");
-    // 代码侧明细页：120 个函数全部关联 → 除表头外只有「（无…）」占位行
-    const codeRows = XLSX.utils.sheet_to_json(wb.Sheets["代码侧-ParentID空值"], { header: 1, defval: "" });
-    if (codeRows.length !== 2 || !String(codeRows[1][0]).includes("（无空 Parent ID"))
-      fail.push("代码侧明细页应为空占位：" + JSON.stringify(codeRows.slice(0, 2)));
+    // 代码侧明细页：全量 Source Code 行（120 函数全关联 → 无空 Parent ID 行）
+    const codeRows = XLSX.utils.sheet_to_json(wb.Sheets["代码侧-SourceCode明细"], { header: 1, defval: "" });
+    if (codeRows.length !== 1 + FUNC_COUNT)
+      fail.push(`代码侧明细应全量列出 ${FUNC_COUNT} 行 Source Code，实际 ${codeRows.length - 1} 行`);
+    if (JSON.stringify(codeRows[0]) !== JSON.stringify(["文档序号", "章节号", "需求内容", "Parent ID"]))
+      fail.push("代码侧明细表头不符：" + JSON.stringify(codeRows[0]));
+    if (codeRows.slice(1).some((r) => !String(r[3] ?? "").trim()))
+      fail.push("代码侧明细存在空 Parent ID 行（smoke 数据应全关联）");
     // 需求侧明细页：全量 55 条孤儿（>50，任何截断都会在这里暴露），含 ID/内容/所属块/行号
     const reqRows = XLSX.utils.sheet_to_json(wb.Sheets["需求侧-未被引用"], { header: 1, defval: "" });
     const detail = reqRows.slice(1).filter((r) => r[0] && !String(r[0]).startsWith("（无"));

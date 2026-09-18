@@ -34,6 +34,21 @@ export async function encodeTraceWorkbook(report, meta = {}) {
         ws.getCell(r + 1, 1).font = { bold: true };
       }
     });
+    if (name === "代码侧-SourceCode明细") {
+      // 空 Parent ID 行整行浅红着色（GitHub danger subtle 风），一眼定位缺口；占位行不着色
+      aoa.forEach((row, r) => {
+        if (r === 0) return;
+        if (String(row[0] ?? "").startsWith("（无")) return;
+        if (String(row[3] ?? "").trim()) return;
+        for (let c = 0; c < Math.max(4, row.length); c++) {
+          ws.getCell(r + 1, c + 1).fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFFFEBE9" },
+          };
+        }
+      });
+    }
     if (name === "校验汇总") {
       for (const spec of buildTraceChartSpecs(report)) {
         const b64 = renderChartPng(spec);
