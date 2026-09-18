@@ -204,9 +204,11 @@ function buildRealRows(fnIndex) {
     for (const c of n.children || []) walk(c);
   })(TREE);
   const rows = [];
-  for (const f of files) {
+  for (const [fi, f] of files.entries()) {
     const secs = /\.h$/i.test(f.path) ? C_SECTIONS.filter((s) => s.key !== "functions") : C_SECTIONS;
-    for (const sec of secs) {
+    for (const [si, sec] of secs.entries()) {
+      // 章节标题行（与真实 collectDocRows 同构：带编号、objectType 空），需求侧明细的「引用章节号」取自它
+      rows.push({ num: `${fi + 2}.${si + 1}`, title: sec.title, objectType: "", parent: "" });
       const names = sectionNames(PARSES[f.path], sec.key);
       const fromSource = names.length > 0;
       for (const it of fromSource ? names : ["N/A"]) {
@@ -389,7 +391,7 @@ console.log("[6/6] 灵敏度：注入缺陷检出");
 console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
 {
   const sheets = buildTraceReportSheets(realReport, { generatedAt: "2026-09-15 00:00" });
-  eq("报告 sheet 名称", sheets.map((s) => s.name), ["校验汇总", "代码侧-SourceCode明细", "需求侧-未被引用"]);
+  eq("报告 sheet 名称", sheets.map((s) => s.name), ["校验汇总", "代码侧-SourceCode明细", "需求侧-一致性明细"]);
   const [sum, codeDet, reqDet] = sheets.map((s) => s.aoa);
   const val = (label) => {
     const row = sum.find((r) => r[0] === label);
@@ -419,10 +421,20 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
     "代码侧明细文档序号升序（对齐链出 ID 坐标系）",
     codeDet.slice(1).every((r, i, a) => i === 0 || a[i - 1][0] < r[0])
   );
-  // 需求侧明细：真实数据零遗漏 → 占位行
-  eq("需求侧明细：零遗漏时占位行", reqDet[1][0], "（无未被引用的 Requirement）");
+  // 需求侧明细（反向核对）：全量 271 条 Requirement，真实数据全覆盖 → 无「（未被引用）」标记行
+  eq("需求侧明细表头（反向核对五列）", reqDet[0], ["低层需求 ID", "低层需求内容", "引用文档序号", "引用章节号", "引用需求内容"]);
+  eq(
+    "需求侧明细：未被引用标记行数 = 孤儿数（0）",
+    reqDet.slice(1).filter((r) => String(r[2] ?? "") === "（未被引用）").length,
+    0
+  );
+  eq("需求侧明细：覆盖的 Requirement 数（去重）", new Set(reqDet.slice(1).map((r) => r[0])).size, 271);
+  ok(
+    "需求侧明细：已引用行三列齐全（序号/章节号/内容）",
+    reqDet.slice(1).every((r) => typeof r[2] === "number" && String(r[3] ?? "") !== "" && String(r[4] ?? "") !== "")
+  );
 
-  // 有孤儿的数据上：逐条 ID / 内容 / 所属块 / 行号
+  // 有孤儿的数据上：孤儿行整行标记未被引用（exceljs 侧据此着色）
   const llr7 = [
     { "Requirement ID": "R_9", "Title / Requirement Text": "orphan text", Type: "Requirement", Section: "" },
   ];
@@ -430,11 +442,31 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
     { num: "", title: "fnA", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "Function Definition" },
   ];
   const rep7 = auditTrace({ rows: rows7, llrRows: llr7, colMap: COL, nameSet: new Set() });
-  const req7 = buildTraceReportSheets(rep7).find((s) => s.name === "需求侧-未被引用").aoa;
-  eq("孤儿明细：ID", req7[1][0], "R_9");
-  eq("孤儿明细：内容", req7[1][1], "orphan text");
-  ok("孤儿明细：未归属块时给占位", String(req7[1][2]).includes("未归属"));
-  eq("孤儿明细：低层需求行号", req7[1][3], 1);
+  const req7 = buildTraceReportSheets(rep7).find((s) => s.name === "需求侧-一致性明细").aoa;
+  eq("需求侧明细：孤儿行 ID", req7[1][0], "R_9");
+  eq("需求侧明细：孤儿行内容", req7[1][1], "orphan text");
+  eq("需求侧明细：孤儿行标记未被引用", req7[1][2], "（未被引用）");
+  ok("需求侧明细：孤儿行引用列为空", req7[1][3] === "" && req7[1][4] === "");
+
+  // 反向核对展开：一条需求被多行引用 → 逐引用一行，引用三列取自 Code 文档行（序号/章节号/符号名）
+  {
+    const llr9 = [
+      { "Requirement ID": "R_1", "Title / Requirement Text": "fnA shall work", Type: "Requirement", Section: "" },
+    ];
+    const rows9 = [
+      { num: "2", title: "sample.c", objectType: "", parent: "" },
+      { num: "2.2", title: "Function Definition", objectType: "", parent: "" },
+      { num: "", title: "fnA", objectType: "Source Code", parent: "R_1", sectionKey: "functions", sectionTitle: "Function Definition" },
+      { num: "", title: "fnB", objectType: "Source Code", parent: "R_1", sectionKey: "functions", sectionTitle: "Function Definition" },
+    ];
+    const rep9 = auditTrace({ rows: rows9, llrRows: llr9, colMap: COL, nameSet: new Set() });
+    const req9 = buildTraceReportSheets(rep9).find((s) => s.name === "需求侧-一致性明细").aoa;
+    eq("需求侧明细：多引用逐行展开", req9.length - 1, 2);
+    eq("需求侧明细：引用文档序号 = rows 全局序号", req9[1][2], 3);
+    eq("需求侧明细：引用章节号取自标题行", req9[1][3], "2.2");
+    eq("需求侧明细：引用需求内容 = 符号名", req9[1][4], "fnA");
+    eq("需求侧明细：第二引用行内容", req9[2][4], "fnB");
+  }
 
   // 代码侧明细：章节号取自最近的章节标题行；文档序号 = rows 全局序号（对齐链出 ID 坐标系）
   {

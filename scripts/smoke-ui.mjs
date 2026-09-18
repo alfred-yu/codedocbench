@@ -437,7 +437,7 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
     if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) fail.push("一致性检查报告不是 zip/xlsx 字节");
     const wb = XLSX.read(bytes, { type: "array" });
     const names = wb.SheetNames;
-    if (JSON.stringify(names) !== JSON.stringify(["校验汇总", "代码侧-SourceCode明细", "需求侧-未被引用"]))
+    if (JSON.stringify(names) !== JSON.stringify(["校验汇总", "代码侧-SourceCode明细", "需求侧-一致性明细"]))
       fail.push("报告 sheet 结构不符：" + names.join(", "));
     // 汇总页：两个视角的「分母 · 命中 · 占比」
     const sum = XLSX.utils.sheet_to_json(wb.Sheets["校验汇总"], { header: 1, defval: "" });
@@ -461,20 +461,22 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
       fail.push("代码侧明细表头不符：" + JSON.stringify(codeRows[0]));
     if (codeRows.slice(1).some((r) => !String(r[3] ?? "").trim()))
       fail.push("代码侧明细存在空 Parent ID 行（smoke 数据应全关联）");
-    // 需求侧明细页：全量 55 条孤儿（>50，任何截断都会在这里暴露），含 ID/内容/所属块/行号
-    const reqRows = XLSX.utils.sheet_to_json(wb.Sheets["需求侧-未被引用"], { header: 1, defval: "" });
-    const detail = reqRows.slice(1).filter((r) => r[0] && !String(r[0]).startsWith("（无"));
-    if (detail.length !== ORPHAN_COUNT)
-      fail.push(`需求侧明细应全量列出 ${ORPHAN_COUNT} 条，实际 ${detail.length} 条（疑似截断）`);
-    const first = detail[0] || [];
-    const last = detail[detail.length - 1] || [];
-    if (first[0] !== ORPHAN_ID(1) || first[1] !== `${ORPHAN_TEXT} (#1)`)
-      fail.push("明细首条 ID/内容不符：" + JSON.stringify(first));
-    if (last[0] !== ORPHAN_ID(ORPHAN_COUNT))
-      fail.push(`明细末条 ID 不符（应 ${ORPHAN_ID(ORPHAN_COUNT)}）—— 疑似截断`);
-    if (!/fn_not_mounted/.test(String(first[2]))) fail.push("明细未给出所属需求块：" + JSON.stringify(first));
-    if (typeof first[3] !== "number" && !/^\d+$/.test(String(first[3])))
-      fail.push("明细未给出低层需求行号：" + JSON.stringify(first));
+    // 需求侧明细页（反向核对）：全量 175 条 Requirement（120 已引用展开 + 55 孤儿标记行，>50 防截断）
+    const reqRows = XLSX.utils.sheet_to_json(wb.Sheets["需求侧-一致性明细"], { header: 1, defval: "" });
+    if (JSON.stringify(reqRows[0]) !== JSON.stringify(["低层需求 ID", "低层需求内容", "引用文档序号", "引用章节号", "引用需求内容"]))
+      fail.push("需求侧明细表头不符：" + JSON.stringify(reqRows[0]));
+    const unref = reqRows.slice(1).filter((r) => String(r[2] ?? "") === "（未被引用）");
+    if (unref.length !== ORPHAN_COUNT)
+      fail.push(`需求侧明细应有 ${ORPHAN_COUNT} 条未被引用标记行，实际 ${unref.length} 条`);
+    const refRowsAll = reqRows.slice(1).filter((r) => r[0] && !String(r[0]).startsWith("（无") && String(r[2] ?? "") !== "（未被引用）");
+    if (refRowsAll.length !== FUNC_COUNT)
+      fail.push(`需求侧明细应展开 ${FUNC_COUNT} 条引用行（1:1 关联），实际 ${refRowsAll.length} 条`);
+    if (refRowsAll.some((r) => typeof r[2] !== "number" || String(r[3] ?? "") === "" || String(r[4] ?? "") === ""))
+      fail.push("需求侧明细存在引用三列不齐的行：" + JSON.stringify(refRowsAll.find((r) => typeof r[2] !== "number")));
+    if (String(unref[0]?.[0] ?? "") !== ORPHAN_ID(1) || unref[0]?.[1] !== `${ORPHAN_TEXT} (#1)`)
+      fail.push("未被引用首条 ID/内容不符：" + JSON.stringify(unref[0]));
+    if (String(unref[unref.length - 1]?.[0] ?? "") !== ORPHAN_ID(ORPHAN_COUNT))
+      fail.push(`未被引用末条 ID 不符（应 ${ORPHAN_ID(ORPHAN_COUNT)}）—— 疑似截断`);
   }
   // 对话框没了，导出后的 alert 摘要是唯一的结果快照：两视角数字必须直接可见
   const lastAlert = alerts.slice(-1)[0] || "";

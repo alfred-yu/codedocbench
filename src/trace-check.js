@@ -82,6 +82,7 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
   /* ---------- ① 代码侧：Source Code 行的 Parent ID 空值，按数据章节分组 ---------- */
   const sectionMap = new Map();
   const sourceRows = []; // 全量 Source Code 行明细（报告「代码侧」sheet 用，按文档顺序）
+  const refsByReq = new Map(); // 需求 ID -> 引用它的 Source Code 行明细（反向核对 sheet 用）
   let sourceTotal = 0;
   let emptyParent = 0;
   let curSectionNum = ""; // 最近的章节标题行编号（数据行 num 为空，章节号从所属章节标题行取）
@@ -98,6 +99,11 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
     // 全量明细：序号与生成文档页「序号」列、链接文件「链出 ID」同一坐标系，便于回表定位。
     sourceRows.push({ index: i + 1, sectionNum: curSectionNum, title: row.title, parent });
     g.total += 1;
+    // Parent ID 支持多 ID（换行分隔）：逐个登记反向引用，供需求侧 sheet 展开成「一需求一引用一行」
+    for (const id of parent.split("\n").map(norm).filter(Boolean)) {
+      if (!refsByReq.has(id)) refsByReq.set(id, []);
+      refsByReq.get(id).push({ index: i + 1, sectionNum: curSectionNum, title: row.title });
+    }
     if (parent) return;
     g.empty += 1;
     emptyParent += 1;
@@ -189,6 +195,8 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
       // 占比分母 = Requirement 条数
       orphanRatio: ratio(orphans.length, reqRows.length),
       orphans,
+      // 反向核对明细：每条 Requirement 及其被引用情况（refs 按文档顺序；孤儿 refs 为空数组）
+      detail: reqRows.map((r) => ({ ...r, refs: refsByReq.get(r.id) || [] })),
     },
     extra: { dangling, duplicated, nonRequirementRefs },
   };
@@ -197,7 +205,8 @@ export function auditTrace({ rows, llrRows, colMap, nameSet }) {
 /* ---------- 报告导出：把核对结果编成 Excel 工作簿 ----------
    三个 sheet：校验汇总（两视角统计 + 占比 + 附带核对 + 结论）/
    代码侧-SourceCode明细（全量 Source Code 行：文档序号 · 章节号 · 需求内容 · Parent ID，空值行 exceljs 侧着色）/
-   需求侧-未被引用（需求 ID · 需求内容 · 所属需求块 · 低层需求行号）。
+   需求侧-一致性明细（反向核对：全量 Requirement 行，低层需求 ID · 内容 + 引用它的 Code 文档行 序号/章节号/内容，
+   未被引用的行 exceljs 侧着色）。
    明细全量列出 —— 报告是导出文件，不是 DOM，不设条数上限。 */
 
 function pct(r) {
@@ -255,20 +264,25 @@ export function buildTraceReportSheets(report, meta = {}) {
   for (const r of code.sourceRows) codeDetail.push([r.index, r.sectionNum, r.title, r.parent]);
   if (codeDetail.length === 1) codeDetail.push(["（无 Source Code 行）", "", "", ""]);
 
-  const reqDetail = [["需求 ID", "需求内容", "所属需求块", "低层需求行号"]];
-  for (const o of requirement.orphans)
-    reqDetail.push([
-      o.id,
-      o.content || "（需求内容为空）",
-      o.block || "（未归属任何需求块）",
-      o.line,
-    ]);
-  if (reqDetail.length === 1) reqDetail.push(["（无未被引用的 Requirement）", "", "", ""]);
+  /* 需求侧 sheet：反向核对视角 —— 全量 Requirement 行（不只孤儿），列出被 Code 文档引用的情况：
+     低层需求 ID / 低层需求内容 / 引用文档序号（对齐链出 ID 坐标系）/ 引用章节号 / 引用需求内容（符号名）。
+     一条需求被多行引用时逐引用展开（一引用一行）；未被引用的行第 3 列给「（未被引用）」标记，
+     exceljs 侧据此整行着色。 */
+  const reqDetail = [["低层需求 ID", "低层需求内容", "引用文档序号", "引用章节号", "引用需求内容"]];
+  for (const r of requirement.detail) {
+    const content = r.content || "（需求内容为空）";
+    if (!r.refs.length) {
+      reqDetail.push([r.id, content, "（未被引用）", "", ""]);
+      continue;
+    }
+    for (const ref of r.refs) reqDetail.push([r.id, content, ref.index, ref.sectionNum, ref.title]);
+  }
+  if (reqDetail.length === 1) reqDetail.push(["（无 Requirement 行）", "", "", "", ""]);
 
   return [
     { name: "校验汇总", aoa: summary, cols: [{ wch: 46 }, { wch: 18 }, { wch: 12 }, { wch: 12 }] },
     { name: "代码侧-SourceCode明细", aoa: codeDetail, cols: [{ wch: 10 }, { wch: 12 }, { wch: 44 }, { wch: 24 }] },
-    { name: "需求侧-未被引用", aoa: reqDetail, cols: [{ wch: 24 }, { wch: 64 }, { wch: 30 }, { wch: 14 }] },
+    { name: "需求侧-一致性明细", aoa: reqDetail, cols: [{ wch: 24 }, { wch: 64 }, { wch: 14 }, { wch: 12 }, { wch: 44 }] },
   ];
 }
 

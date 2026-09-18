@@ -49,6 +49,21 @@ export async function encodeTraceWorkbook(report, meta = {}) {
         }
       });
     }
+    if (name === "需求侧-一致性明细") {
+      // 未被引用的 Requirement 行整行浅红着色（与代码侧空值行同一视觉语言）；占位行不着色
+      aoa.forEach((row, r) => {
+        if (r === 0) return;
+        if (String(row[0] ?? "").startsWith("（无")) return;
+        if (String(row[2] ?? "") !== "（未被引用）") return;
+        for (let c = 0; c < Math.max(5, row.length); c++) {
+          ws.getCell(r + 1, c + 1).fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFFFEBE9" },
+          };
+        }
+      });
+    }
     if (name === "校验汇总") {
       for (const spec of buildTraceChartSpecs(report)) {
         const b64 = renderChartPng(spec);
