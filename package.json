@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "smoke": "vite build && node scripts/smoke-ui.mjs && node scripts/test-link-split.mjs && node scripts/test-trace-check.mjs",
+    "smoke": "vite build && node scripts/smoke-ui.mjs && node scripts/test-link-split.mjs && node scripts/test-trace-check.mjs && node scripts/test-trace-report.mjs",
     "test:link-split": "node scripts/test-link-split.mjs",
     "test:trace-check": "node scripts/test-trace-check.mjs",
+    "test:trace-report": "node scripts/test-trace-report.mjs",
     "freeze:backend": "python scripts/build_backend.py",
     "before:tauri:build": "npm run freeze:backend && npm run build",
     "tauri": "tauri"

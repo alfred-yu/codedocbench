@@ -67,7 +67,7 @@
 
 列映射缺失时如实降级：未映射 `ID 列` → 无法生成 Parent ID，占比记为「—」；未映射 `Object Type 列` → 视角二退化为「所有带 ID 的行」并在报告中明确提示。
 
-判定逻辑与报告数据装配集中在 `src/trace-check.js`（纯模块，不依赖 DOM / Tauri / xlsx），可脱离界面回归；工作簿编码在 `src/trace-report-exceljs.js`（ExcelJS，仅浏览器运行，负责嵌图与空值行着色）。
+判定逻辑与报告数据装配集中在 `src/trace-check.js`（纯模块，不依赖 DOM / Tauri / xlsx），可脱离界面回归；工作簿编码在 `src/trace-report-exceljs.js`（ExcelJS，负责嵌图与空值行着色），其加粗 / 空值行着色 / 列宽 / 图表锚点与字节由 `scripts/test-trace-report.mjs` 在 Node 用真实 ExcelJS + 注入桩图表渲染器回归（渲染像素本身依赖浏览器 Canvas，不在覆盖范围）。
 
 ## 技术架构
 
@@ -105,7 +105,8 @@
 ├── scripts/
 │   ├── smoke-ui.mjs           # 界面冒烟（DOM stub + 伪后端，抓未声明标识符）
 │   ├── test-link-split.mjs    # 链接文件切分回归
-│   └── test-trace-check.mjs   # 一致性校验回归
+│   ├── test-trace-check.mjs   # 一致性校验回归
+│   └── test-trace-report.mjs  # 检查报告工作簿编码回归（真实 ExcelJS + 桩渲染器）
 ├── samples/cproject/        # 示例 C 项目
 └── dist/                    # 前端构建产物
 ```
@@ -137,11 +138,12 @@ npm run smoke                   # 构建 + 界面冒烟 + 前端回归（分片 
 
 `tests/test_backend_parse.py` 是解析器的金标准回归基线（16 例），覆盖基础符号识别、多行宏、条件编译剔除、多声明符、函数指针、头文件保护宏过滤、词法安全、元数据字段，以及对 `samples/` 真实文件的冒烟检查。**修改 `backend.py` 解析规则后务必运行**，防止精度回退。
 
-`npm run smoke` 依次执行三件事：
+`npm run smoke` 依次执行四件事：
 
 - `scripts/smoke-ui.mjs` —— 在 Node 里用 DOM stub + 伪 Tauri 后端加载打包产物，驱动「打开项目 → 生成链接文件 → 导出分片 → 一致性校验报告导出」真实链路。用于抓 `vite build` 与 pytest 都覆盖不到的缺陷：**模块顶层引用未声明标识符**（会让整个模块求值中断，表现为「点按钮无反应」），以及按钮接线、未生成不可导出守卫、分页、一致性校验的报表导出（对话框节点必须不存在，报告三个 sheet 与两视角数字齐全）、构建产物中关键 DOM 节点是否齐全。
 - `scripts/test-link-split.mjs` —— 链接文件切分与链入 ID 取值回归（75 项断言）。
 - `scripts/test-trace-check.mjs` —— 一致性校验与检查报告数据装配回归（119 项断言），含 `demo/mock.js` 内嵌真实项目数据的端到端核对与缺陷注入灵敏度验证。
+- `scripts/test-trace-report.mjs` —— 一致性检查报告工作簿编码回归（76 项断言）：真实 ExcelJS + 注入桩图表渲染器，断言 sheet 结构与汇总数值、分区行加粗、空 Parent ID / 未被引用行的整行着色（含占位行排除、着色列边界）、图表渲染规格与锚点/ext 固定尺寸/图片字节落库，以及空报告占位与列映射缺失提示。
 
 ## 数据持久化
 
