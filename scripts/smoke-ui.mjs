@@ -147,7 +147,12 @@ const SOURCE_PATH = path.join(ROOT, "samples", "cproject", "src", "big.c");
 const FUNC_COUNT = 120;
 const FUNCS = Array.from({ length: FUNC_COUNT }, (_, i) => ({
   name: "fn_" + String(i + 1).padStart(3, "0"),
+  isDefinition: true,
 }));
+/* 同文件原型声明（真实项目常见形态）：函数章只应输出定义。
+   若 dataSectionNames 的 isDefinition 过滤回潮，fn_001 会重复出现，
+   生成文档/链接文件/一致性报告的 120 行计数断言会全部翻车。 */
+const DECL_FN_001 = { name: "fn_001", isDefinition: false };
 
 /* 低层需求（LLR）真实形态：ID 列带前缀 `DEMO_LL_R_<n>`。
    每个函数一个需求块（函数名行 + 一条 Requirement 行），
@@ -219,7 +224,7 @@ const tauriInvoke = async (cmd, args) => {
     throw new Error("ENOENT: 文件不存在"); // 导出时的同名覆盖探测走这条
   }
   if (cmd === "parse_file")
-    return { functions: FUNCS, structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
+    return { functions: [...FUNCS, DECL_FN_001], structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
   if (cmd === "file_mtime") return 1;
   if (cmd === "save_file") {
     savedFiles.push({ path: args.path, data: args.data });

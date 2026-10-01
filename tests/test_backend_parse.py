@@ -40,8 +40,10 @@ int add(int a, int b) { return a + b; }
 static int counter;
 """)
     assert names(r["includes"]) == ["stdio.h", "cfg.h"]
-    assert "MAX_CONN" in names(r["constants"])
+    # v1.3.0 起 #define 一律归宏，常量章由 const 全局变量承载
+    assert "MAX_CONN" in names(r["macros"])
     assert "RESET" in names(r["macros"])
+    assert r["constants"] == []
     assert "u32" in names(r["typedefs"])
     assert "Point" in names(r["structs"])
     assert names(r["enums"]) == ["Color"]
@@ -90,9 +92,8 @@ int live_func(void) { return 2; }
 int tail_func(void) { return 3; }
 """)
     assert names(r["functions"]) == ["live_func", "tail_func"]
-    all_macros = names(r["macros"]) + names(r["constants"])
-    assert "DEAD_MACRO" not in all_macros
-    assert "LIVE_MACRO" in all_macros
+    assert "DEAD_MACRO" not in names(r["macros"])
+    assert "LIVE_MACRO" in names(r["macros"])
 
 
 def test_ifdef_unknown_keeps_all_branches(tmp_path):
@@ -163,7 +164,8 @@ const char *msg = "字符串中的 // 与 /* 不算注释";
 int ok_func(void) { return 0; }
 """)
     assert names(r["functions"]) == ["ok_func"]
-    assert "msg" in names(r["globals"])
+    # const 限定的指针全局变量归入常量章（v1.3.0）
+    assert "msg" in names(r["constants"])
 
 
 def test_unterminated_record_ignored(tmp_path):
@@ -171,6 +173,41 @@ def test_unterminated_record_ignored(tmp_path):
     r = parse(tmp_path, "struct Broken { int x;\n\nint after(void) { return 1; }\n")
     parsed_ok = parse(tmp_path, "int after(void) { return 1; }\n")
     assert "after" in names(parsed_ok["functions"])  # 解析器本身可正常工作
+
+
+# ---------------------------------------------------------------------------
+# v1.3.0 归类口径：#define 一律归宏；const 限定的全局变量归常量
+# ---------------------------------------------------------------------------
+def test_define_all_to_macros(tmp_path):
+    # 数值/字符串字面量宏不再分流到常量章（老口径回潮时此用例翻车）
+    r = parse(tmp_path, """#define N 100
+#define S "str"
+#define F(x) ((x) + 1)
+#define E
+""")
+    assert set(names(r["macros"])) == {"N", "S", "F", "E"}
+    assert r["constants"] == []
+
+
+def test_const_globals_routed_to_constants(tmp_path):
+    r = parse(tmp_path, """const int MAX_LEVEL = 5;
+static const double PI = 3.14;
+const char *msg = "hi";
+char *const fixed = 0;
+extern const long LIMIT;
+const int a = 1, b = 2;
+int c, *const p = 0;
+int plain_var;
+static int counter = 0;
+void (*const cb)(int) = 0;
+void (*cb2)(int);
+""")
+    c = set(names(r["constants"]))
+    g = set(names(r["globals"]))
+    # 基类型 const（MAX_LEVEL/PI/a/b）、指针 const（msg/fixed/p/cb）均归常量；
+    # 同语句的非 const 声明符（c）与普通变量（plain_var/counter/cb2）留在全局变量章
+    assert c == {"MAX_LEVEL", "PI", "msg", "fixed", "LIMIT", "a", "b", "p", "cb"}
+    assert g == {"c", "plain_var", "counter", "cb2"}
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +234,7 @@ def test_include_guard_filtered(tmp_path):
 int cfg_func(void);
 #endif
 """)
-    all_defs = names(r["macros"]) + names(r["constants"])
+    all_defs = names(r["macros"])
     assert "CFG_H" not in all_defs
     assert "REAL_MACRO" in names(r["macros"])
 
@@ -214,12 +251,12 @@ def test_include_guard_variants_filtered(tmp_path):
 #endif
 int util_func(void);
 """)
-    all_defs = names(r["macros"]) + names(r["constants"])
+    all_defs = names(r["macros"])
     assert "UTIL_H" not in all_defs
     assert "ADD_H" not in all_defs
-    # 保护块内部的普通宏正常保留（数值归常量）
-    assert "UTIL_FLAG" in names(r["constants"])
-    assert "ADD_OFFSET" in names(r["constants"])
+    # 保护块内部的普通宏正常保留（v1.3.0 起 #define 不再按值分流到常量）
+    assert "UTIL_FLAG" in names(r["macros"])
+    assert "ADD_OFFSET" in names(r["macros"])
 
 
 def test_non_guard_define_kept(tmp_path):
@@ -231,7 +268,7 @@ int some_func(void);
 #endif
 #define LATER_FLAG
 """)
-    all_defs = names(r["macros"]) + names(r["constants"])
+    all_defs = names(r["macros"])
     assert "B_NOT_MATCH" in all_defs
     assert "EMPTY_FLAG" in all_defs
     assert "LATER_FLAG" in all_defs

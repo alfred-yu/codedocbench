@@ -1054,7 +1054,11 @@ function dataSectionNames(res, key) {
     globals: res.globals || [],
     macros: res.macros || [],
     constants: res.constants || [],
-    functions: res.functions || [],
+    // 函数章只收定义：同文件的原型与 extern 引用（isDefinition=false）不算本文件的函数，
+    // 否则会与定义所在文件重复出文档（声明经 #include 进来的本就不在解析结果里）
+    functions: (res.functions || []).filter(
+      (f) => !(f && typeof f === "object" && f.isDefinition === false)
+    ),
   };
   return (byKey[key] || [])
     .map((x) => (x && typeof x === "object" ? x.name : x))

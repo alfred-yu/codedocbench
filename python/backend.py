@@ -13,7 +13,7 @@ import re
 import sys
 
 # 解析器版本号：随解析结果输出，用于追溯"数据由哪个版本的解析规则产生"
-PARSER_VERSION = "1.2.0"
+PARSER_VERSION = "1.3.0"
 
 # 可解析的源码后缀
 SOURCE_EXTS = {".c", ".h", ".cpp", ".hpp", ".cc", ".cxx"}
@@ -336,27 +336,29 @@ def _parse_prepro(text: str, line: int, result: dict) -> None:
         if dm:
             name = dm.group(1)
             value = dm.group(2).strip() or "(empty)"
-            entry = {"name": name, "value": value, "line": line}
-            # 常量定义：值为数值/字符串/字符字面量（可带符号或括号）的宏
-            if _is_constant_literal(value):
-                result["constants"].append(entry)
-            else:
-                result["macros"].append(entry)
+            # #define 一律归入宏（v1.3.0 起）：常量章改由 const 限定的全局变量承载
+            result["macros"].append({"name": name, "value": value, "line": line})
 
 
-_CONSTANT_RE = re.compile(
-    r"^\s*(\(?\s*[+\-]?\s*"
-    r"(0[xX][0-9a-fA-F]+|[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?[uUlLfF]*)|"
-    r"[+\-]?[0-9]+(?:\.[0-9]+)?"
-    r")\s*\)?$"
-)
+def _has_const_qualifier(tokens: list) -> bool:
+    """声明部分（首个顶层 '=' 之前）是否含 const 限定符。
 
-
-def _is_constant_literal(value: str) -> bool:
-    v = value.strip()
-    if v.startswith(('"', "'")):
-        return True
-    return bool(_CONSTANT_RE.match(v))
+    只看 '=' 之前，避免初始化表达式里的 const（如 = (const void*)0）影响归类；
+    兼容 const 的各种位置：基类型前（const int x）、指针名前（int *const p）、
+    类型后（char const *p），以及多声明符语句里基类型共享的 const。
+    """
+    depth = 0
+    for t in tokens:
+        v = t[1]
+        if v in ("(", "[", "{"):
+            depth += 1
+        elif v in (")", "]", "}"):
+            depth -= 1
+        elif v == "=" and depth == 0:
+            break
+        if v == "const":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -411,14 +413,15 @@ def _scan_top_level(tokens: list, result: dict) -> None:
                 continue
             fp = _consume_fnptr(tokens, i)
             if fp:
-                info, j = fp
-                result["globals"].append(info)
+                info, is_const, j = fp
+                (result["constants"] if is_const else result["globals"]).append(info)
                 i = j
                 continue
             g = _consume_global(tokens, i)
             if g:
-                infos, j = g
-                result["globals"].extend(infos)
+                consts, plains, j = g
+                result["constants"].extend(consts)
+                result["globals"].extend(plains)
                 i = j
                 continue
         i += 1
@@ -725,14 +728,16 @@ def _consume_fnptr(tokens: list, i: int) -> tuple | None:
         return None
     name_tok = idents[-1]
     type_text = _fmt_type(seg[:open_idx]) or "?"
-    return {"name": name_tok[1], "type": type_text, "line": name_tok[2]}, j + 1
+    is_const = _has_const_qualifier(seg)
+    return {"name": name_tok[1], "type": type_text, "line": name_tok[2]}, is_const, j + 1
 
 
 # -- 全局变量 ------------------------------------------------------------------
 def _consume_global(tokens: list, i: int) -> tuple | None:
     """识别 top-level 全局变量声明，支持多声明符：int a, b, *c = NULL;
 
-    返回 (符号列表, 消耗到的下标)；不像变量声明则返回 None。
+    返回 (常量符号列表, 普通变量符号列表, 消耗到的下标)；不像变量声明则返回 None。
+    带 const 限定的声明符归入常量（基类型 const 与指针 const 均算），其余归入普通全局变量。
     """
     n = len(tokens)
     first = tokens[i]
@@ -779,7 +784,8 @@ def _consume_global(tokens: list, i: int) -> tuple | None:
     segments.append(cur)
 
     base_tokens = None
-    globals_out = []
+    const_out = []
+    plain_out = []
     for si, seg in enumerate(segments):
         # 名字只在声明符部分（顶层 '=' 之前）找，避免初始化表达式的标识符冒充变量名
         eq_idx = -1
@@ -814,14 +820,17 @@ def _consume_global(tokens: list, i: int) -> tuple | None:
             # 后续段复用基类型，并附加自己的 '*' 限定符
             stars = [t for t in prefix if t[1] == "*"]
             type_text = _fmt_type(base_tokens + stars) or "?"
-        globals_out.append({
+        entry = {
             "name": name_tok[1],
             "type": type_text,
             "line": name_tok[2],
-        })
-    if not globals_out:
+        }
+        # const 判定：首段看声明符自身（含基类型 const），后续段还要叠加共享基类型
+        eff = decl if si == 0 else base_tokens + decl
+        (const_out if _has_const_qualifier(eff) else plain_out).append(entry)
+    if not const_out and not plain_out:
         return None
-    return globals_out, j + 1
+    return const_out, plain_out, j + 1
 
 
 # ---------------------------------------------------------------------------
