@@ -7,8 +7,11 @@
 | | |
 |---|---|
 | 仓库 | <https://github.com/alfred-yu/codedocbench>（默认分支 `main`） |
+| 下载 | <https://github.com/alfred-yu/codedocbench/releases>（最新：[v0.1.2](https://github.com/alfred-yu/codedocbench/releases/tag/v0.1.2)） |
 | 技术栈 | 原生 JS + Vite · Tauri 2 (Rust) · Python 3（纯标准库解析器） |
 | 许可 | [GPL-3.0](LICENSE) |
+
+安装包提供 MSI 与 NSIS 两种格式。**目标机器无需安装 Python** —— Python 后端已用 PyInstaller 冻结为 `backend.exe` 内嵌在安装包中。
 
 ## 功能特性
 
@@ -120,10 +123,13 @@
 │   ├── test-trace-report.mjs  # 检查报告工作簿编码回归（真实 ExcelJS + 桩渲染器）
 │   ├── cdp_verify_gen.mjs     # 真实浏览器验证：生成预览分页
 │   ├── cdp_verify_p2.mjs      # 真实浏览器验证：Worker 大文件不卡主线程
+│   ├── cdp_verify_invalid.mjs # 真实浏览器验证：链接失效提示的样式与可见性
 │   ├── cdp_shot_step5.mjs     # 真实浏览器截取手册配图（docs/images/）
+│   ├── make_release.py        # 建 GitHub Release 并上传安装包（幂等）
 │   └── preview-charts.html    # 报告图表观感自检页（浏览器同步挂载 canvas）
 ├── docs/
 │   ├── 用户手册.md             # 图文操作指南
+│   ├── release-notes-*.md     # 各版本发布说明（发布正文取自此）
 │   ├── images/                 # 手册配图（由 cdp_shot_step5.mjs 生成）
 │   └── promo/                  # 产品宣传视频
 ├── demo/                  # 浏览器演示模式：内嵌合成项目数据 + 自动导览
@@ -164,6 +170,37 @@ npm run smoke                   # 构建 + 界面冒烟 + 前端回归（分片 
 - `scripts/test-link-split.mjs` —— 链接文件切分与链入 ID 取值回归（75 项断言）。
 - `scripts/test-trace-check.mjs` —— 一致性校验与检查报告数据装配回归（119 项断言），含 `demo/mock.js` 内嵌真实项目数据的端到端核对与缺陷注入灵敏度验证。
 - `scripts/test-trace-report.mjs` —— 一致性检查报告工作簿编码回归（76 项断言）：真实 ExcelJS + 注入桩图表渲染器，断言 sheet 结构与汇总数值、分区行加粗、空 Parent ID / 未被引用行的整行着色（含占位行排除、着色列边界）、图表渲染规格与锚点/ext 固定尺寸/图片字节落库，以及空报告占位与列映射缺失提示。
+
+`scripts/smoke-ui.mjs` 另含「链接失效」一组回归：步骤 5 生成结果后，改列映射、刷新项目都必须让结果作废（预览区复位 + 导出按钮禁用 + 提示写明具体原因），改链入/链出元信息则**不该**失效，重新生成须恢复可导出态。
+
+### 真实浏览器验证（CDP）
+
+纯 UI 改动**不能只跑冒烟**——DOM stub 只证明代码写进了 `innerHTML`，证明不了用户看得见（样式类写错、被更高优先级规则覆盖、容器裁切）。样式类改动必须补 CDP：
+
+```bash
+npm run dev -- --port 1420 --strictPort                     # 另开一个终端
+msedge --headless=new --remote-debugging-port=9333 \
+       --user-data-dir=.workbuddy/edge-profile about:blank   # 另开一个终端
+node scripts/cdp_verify_invalid.mjs                          # 断言计算样式与可见性
+```
+
+现有脚本：`cdp_verify_gen.mjs`（步骤 4 分页）、`cdp_verify_p2.mjs`（Worker 不冻结主线程）、`cdp_verify_invalid.mjs`（失效提示的浅红底/警示色/边框实打实生效）、`cdp_shot_step5.mjs`（截手册配图）。
+
+## 发布
+
+版本号需同步 5 处：`package.json`、`package-lock.json`（顶层两处）、`src-tauri/tauri.conf.json`（version + 窗口标题）、`src-tauri/Cargo.toml`、`Cargo.lock`。
+
+```bash
+python scripts/build_backend.py                # 冻结 Python 后端为 exe
+npm run build                                   # 前端产物
+# npm 不可用时，绕过 tauri 的 beforeBuildCommand：
+#   写临时 tauri.release.conf.json = {"build":{"beforeBuildCommand":""}}
+#   node node_modules/@tauri-apps/cli/tauri.js build --config tauri.release.conf.json
+git tag -a vX.Y.Z -m "..." && git push origin main vX.Y.Z
+python scripts/make_release.py vX.Y.Z "标题" docs/release-notes-vX.Y.Z.md
+```
+
+`make_release.py` 幂等：release 已存在则复用、资产按名跳过已存在的，中断后重跑即可补齐。两个易踩的坑（已实测）：**资产上传必须走 `uploads.github.com`**（release 自带的 `upload_url` 是 `…/assets{?name,label}` 模板，打到 `api.github.com` 会 404），且该主机的 `Accept` 只能是 `*/*`。安装包不入库，统一由 Release 承载。
 
 ## 数据持久化
 
