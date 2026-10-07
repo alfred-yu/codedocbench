@@ -176,6 +176,8 @@ function showCtxMenu(x, y, items) {
 /* 重新扫描当前项目根目录，刷新目录树与解析结果 */
 async function rescanProject() {
   if (!projectRoot) return;
+  // 重扫可能新增/删除/修改源码文件 → 挂载文件的符号集变化 → 链接需重做
+  invalidateLinkGeneration("项目已刷新");
   await doScan(projectRoot);
 }
 
@@ -550,6 +552,8 @@ async function loadLlrFile(filePath) {
   relFileName.textContent = filePath.split(/[\\/]/).pop();
   fillRelColSelects();
   renderRelPreview();
+  // 换了需求文件 → 关联到的 Parent ID 全变，链接的链入 ID 必须重算
+  invalidateLinkGeneration("低层需求文件已更换");
   // 关联的文件与列映射随项目持久化
   saveDocTree();
 }
@@ -584,7 +588,11 @@ function fillRelColSelects() {
 
 // 列映射变更 → 随项目持久化
 for (const sel of [relColChapter, relColId, relColContent, relColObject]) {
-  sel.addEventListener("change", () => saveDocTree());
+  sel.addEventListener("change", () => {
+    // 列映射决定 Parent ID（即链入 ID 的来源），改动后已生成的链接必须失效
+    invalidateLinkGeneration("低层需求列映射已修改");
+    saveDocTree();
+  });
 }
 
 function renderRelPreview() {
@@ -893,6 +901,8 @@ async function refreshLlrIfChanged() {
   if (invalid.length) {
     relFileName.textContent += `（注意：原列映射已失效：${invalid.join("、")}，请重新映射）`;
   }
+  // 外部修改被重读 → 需求内容与 ID 集合可能变化 → 链接需重做
+  invalidateLinkGeneration("低层需求文件已被外部修改");
   saveDocTree();
   return true;
 }
@@ -957,7 +967,9 @@ async function loadDocTree() {
   refreshAllFileData();
   restoreLlr(savedLlr);
   restoreLink(savedLink);
-  resetLinkGeneration();
+  // 刷新项目场景下失效原因依然成立（rescanProject 先 invalidate 再走到这里），保留之；
+  // 首次打开项目时本就无失效原因，保留空串等于清空，行为一致。
+  resetLinkGeneration(true);
 }
 
 /* 树变更后防抖写回项目文件，避免频繁编辑时反复落盘 */
@@ -1303,6 +1315,8 @@ function commitDocEdit(node, value, cancelled) {
     node.title = value.trim() || "未命名章节";
   }
   docEditId = null;
+  // 新增/重命名/取消新增都会改变导出行（章节号与符号行位置随之变化），已生成的链接需重做
+  invalidateLinkGeneration("文档目录树已修改");
   renderDocTree();
 }
 
@@ -1373,6 +1387,7 @@ function deleteDocNode() {
   if (!confirm(`删除「${node.title}」及其子节点？`)) return;
   removeDocNode(docTree, docSelection);
   docSelection = null;
+  invalidateLinkGeneration("文档目录树已修改");
   renderDocTree();
 }
 
@@ -1407,6 +1422,7 @@ function mountFiles() {
   }
   for (const c of creates) target.children.push(c.node);
   mountSelection.clear();
+  if (creates.length) invalidateLinkGeneration("文档目录树已修改");
   renderDocTree();
   renderDocProjectTree();
   if (creates.length) {
@@ -1777,6 +1793,11 @@ let linkSourceCount = 0; // Source Code 行数（链接来源记录数）
 let linkLinkedCount = 0; // 其中已关联到需求的符号数
 let linkGenerated = false; // 是否已由「生成链接文件」按钮触发过生成（未生成时预览只给提示、不可导出）
 let linkPage = 0; // 预览当前页（0-based）：一页 = 一个导出文件（≤ LINK_MAX_ROWS 行数据），仅影响预览、不影响导出
+/* 上次生成结果失效的原因（空串=无失效）。写进预览区而非只靠状态栏：
+   状态栏是瞬时的，会被「正在扫描…」「正在解析低层需求文件…」等进度文案整条覆盖掉
+   （刷新项目时 invalidate → doScan → loadDocTree → loadLlrFile 连续写状态栏），
+   用户点完只会看到进度，看不到「为什么链接没了」。预览区是常驻的，且紧挨着生成按钮。 */
+let linkInvalidReason = "";
 const LINK_FILE_BASE = "链接文件"; // 分片文件名前缀（单片导出时由用户在「另存为」对话框里自定文件名）
 
 /* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
@@ -1813,8 +1834,11 @@ function paintLinkTable() {
   if (!linkGenerated) {
     // 未生成：只提示下一步操作，不渲染任何链接数据（生成必须由按钮显式触发）
     linkStats.innerHTML = "";
-    linkPreviewEl.innerHTML =
-      '<p class="placeholder">填写链入/链出信息后，点击「生成链接文件」</p>';
+    linkPreviewEl.innerHTML = linkInvalidReason
+      ? `<p class="placeholder placeholder-warn">${escapeHtml(
+          linkInvalidReason
+        )}，链接文件需重新点击「生成链接文件」</p>`
+      : '<p class="placeholder">填写链入/链出信息后，点击「生成链接文件」</p>';
     return;
   }
   const cfg = linkCfg();
@@ -1941,22 +1965,53 @@ async function generateLink() {
   linkSourceCount = built.sourceCount;
   linkLinkedCount = built.linkedCount;
   linkGenerated = true;
+  linkInvalidReason = ""; // 已按最新上游数据重算，失效原因随之作废
   linkPage = 0; // 重新生成后回到第 1 页
   linkRunBtn.disabled = false;
   linkRunBtn.removeAttribute("title");
   paintLinkTable();
 }
 
-/* 打开/切换项目后回到「未生成」状态，需重新点击按钮生成 */
-function resetLinkGeneration() {
+/* 回到「未生成」状态，需重新点击按钮生成。
+   keepReason=true 时保留上一次的失效原因（刷新项目会经 loadDocTree 复位，
+   但失效原因在复位之后依然成立，不能被顺手抹掉）。 */
+function resetLinkGeneration(keepReason) {
   linkRows = [];
   linkSourceCount = 0;
   linkLinkedCount = 0;
   linkGenerated = false;
   linkPage = 0;
+  if (!keepReason) linkInvalidReason = "";
   linkRunBtn.disabled = true;
   linkRunBtn.title = "请先点击「生成链接文件」";
   paintLinkTable();
+}
+
+/* 步骤 5 结果的失效判定
+   —— 链接行只依赖三样东西：文档目录树结构、挂载文件的解析结果、低层需求数据（含列映射）。
+      任一变化都会让上次生成的结果过期，而用户看到的是「预览还在、导出也能点」，
+      于是会静默导出过期数据。故上游变更时主动复位（预览明确回到未生成态），
+      导出前再核一次签名兜底（源码被外部程序修改这类不经过交互的路径）。
+   reason 写进预览区（常驻，必被看到）；状态栏只做即时提示，会被后续进度文案覆盖。
+   未生成时静默返回，避免无谓的重绘与提示噪音。 */
+function invalidateLinkGeneration(reason) {
+  if (!linkGenerated) return;
+  linkInvalidReason = reason || "上游数据已变更";
+  resetLinkGeneration(true);
+  if (reason) setStatus(`${reason}，链接文件需重新生成`);
+}
+
+/* 导出前兜底核验：重算链接行与生成时比对，不一致说明上游数据在生成之后被改动过。
+   源码重解析（mtime 变化、刷新项目）与低层需求外部修改都不经过界面交互，
+   只能在这里拦住。返回 true 表示仍与生成时一致。 */
+async function linkRowsUpToDate() {
+  await refreshAllFileData();
+  await refreshLlrIfChanged();
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const rebuilt = buildLinkRows(fnIndex);
+  if (JSON.stringify(rebuilt.rows) === JSON.stringify(linkRows)) return true;
+  invalidateLinkGeneration("文档目录树、源码或低层需求在生成之后发生了变化");
+  return false;
 }
 
 /* 多片导出时的文件名前缀在链接状态区声明（LINK_FILE_BASE） */
@@ -1985,6 +2040,13 @@ async function exportLinkExcel() {
   // 导出内容即预览内容：未生成时不允许导出，避免导出未经确认的数据
   if (!linkGenerated) {
     alert("请先点击「生成链接文件」生成链接文件后再导出");
+    return;
+  }
+  // 兜底核验：源码被外部程序改动、或低层需求文件被外部修改（两者都不经过界面交互，
+  // 拿不到 invalidateLinkGeneration 的钩子）都可能让上次生成的结果过期。
+  // 重算比对不一致就复位并中止，绝不静默导出过期数据。
+  if (!(await linkRowsUpToDate())) {
+    alert("文档目录树、源码或低层需求在生成之后发生了变化，链接文件已失效。\n请重新点击「生成链接文件」后再导出。");
     return;
   }
   if (!linkRows.length) {

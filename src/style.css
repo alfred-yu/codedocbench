@@ -554,6 +554,18 @@ body {
   color: #c4cad4;
 }
 
+/* 失效提示占位（非首次进入步骤 5，而是上游数据变更导致上次结果作废）：
+   用警示色 + 浅底与普通占位区分，避免用户把它当成"还没开始" */
+.placeholder-warn {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid #f3c9c4;
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 24px auto;
+  max-width: 520px;
+}
+
 .splitter {
   width: 6px;
   flex: none;

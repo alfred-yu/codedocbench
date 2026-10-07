@@ -119,12 +119,20 @@ function makeEl(id) {
 }
 
 const registry = new Map();
+/* createElement 钩子：右键菜单等动态创建的节点不进 registry，测试需要捕获它们
+   （如 showCtxMenu 造的「刷新项目」菜单项，其 click 监听里闭包存着 action）。
+   测试期间临时替换 document.createElement 收集目标节点，用完必须还原。 */
+let createdHook = null;
 globalThis.document = {
   getElementById: (id) => {
     if (!registry.has(id)) registry.set(id, makeEl(id));
     return registry.get(id);
   },
-  createElement: (tag) => makeEl("new:" + tag),
+  createElement: (tag) => {
+    const el = makeEl("new:" + tag);
+    if (createdHook) createdHook(el, tag);
+    return el;
+  },
   createTextNode: () => makeThing(),
   querySelector: (sel) => {
     const key = "document >> " + sel;
@@ -263,9 +271,9 @@ console.log("[smoke] 打包产物:", bundle);
 
 try {
   await import("file:///" + path.join(DIST, bundle).replace(/\\/g, "/"));
-  console.log("[1/7] 模块顶层执行完成");
+  console.log("[1/9] 模块顶层执行完成");
 } catch (e) {
-  console.log("[1/7] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
+  console.log("[1/9] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
   process.exit(1);
 }
 
@@ -296,12 +304,12 @@ const clickSelectorIn = (containerId, sel) => {
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
 if (!treeEl) {
-  console.log("[2/7] 未找到打开项目的 click 监听 ❌");
+  console.log("[2/9] 未找到打开项目的 click 监听 ❌");
   process.exit(1);
 }
 for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
 await settle(400);
-console.log("[2/7] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
+console.log("[2/9] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
 if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
 if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
 // P2 回归：LLR 恢复加载走 showRelLoading(true)→(false)，状态条提示必须在复位时清掉
@@ -309,7 +317,7 @@ if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的�
 const statusText = () => String((registry.get("status") && registry.get("status").textContent) || "");
 if (statusText().includes("正在解析")) fail.push(`解析完成后状态条未复位：「${statusText()}」`);
 
-console.log("[3/7] 步骤 5 按钮接线 +「未生成不可导出」守卫");
+console.log("[3/9] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");
 const runBound = clickBtn("link-run-btn");
 await settle(80);
@@ -320,7 +328,7 @@ if (!runBound) fail.push("link-run-btn 未绑定 click");
 if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
 if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
-console.log("[4/7] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
+console.log("[4/9] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
 const wMark = writes.length;
 clickBtn("link-gen-btn");
 await settle(400);
@@ -375,7 +383,7 @@ console.log(`  上一页后: ${pageLabel(h2b)} 行数=${rowsIn(h2b)} 首行链�
 if (pageLabel(h2b) !== "2/3") fail.push("「上一页」未回到第 2 页：" + pageLabel(h2b));
 if (firstInId(h2b) !== "51") fail.push("返回第 2 页后首行链入 ID 应为 51，实际 " + firstInId(h2b));
 
-console.log("[5/7] 导出分片：校验真实写盘字节");
+console.log("[5/9] 导出分片：校验真实写盘字节");
 clickBtn("link-run-btn");
 await settle(600);
 // 注意：save_file 也用于写工程数据文件（.codedocbench.json），这里只看导出的 Excel
@@ -424,7 +432,7 @@ if (previewHtml.includes("DEMO_LL_R_")) fail.push("预览中的链入 ID 仍带�
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
-console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
+console.log("[6/9] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
 {
   // DOM stub 的 getElementById 永远返回对象，标记丢失不会暴露；故直接核对构建产物里的节点。
   // 结果已从对话框改为导出报告：对话框标记必须不存在，防止死节点回潮
@@ -497,7 +505,7 @@ console.log("[6/7] 一致性检查报告导出：按钮触发 → 另存为 → 
   console.log("  报告已导出，摘要:", lastAlert.replace(/\n/g, " | ").slice(0, 170));
 }
 
-console.log("[7/8] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
+console.log("[7/9] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
 {
   // 用户操作顺序点击 stepper 解锁步骤（maxStep 闸门），最终触发 renderGenPreview
   const stepFns = registry.get("stepper") && registry.get("stepper").__listeners.click;
@@ -549,7 +557,113 @@ console.log("[7/8] 生成预览分页：进入步骤 4，断言只渲染当前�
   }
 }
 
-console.log("[8/8] 错误文案 / 未处理异常");
+console.log("[8/9] 链接失效：上游数据变更后已生成的链接必须失效（防静默导出过期数据）");
+{
+  // 背景：步骤 5 的链接行依赖「文档目录树 + 源码解析结果 + 低层需求数据」三者。
+  //      修复前这三条上游变更路径都不复位，用户看到的仍是上次的预览 + 可点的导出按钮，
+  //      于是会静默导出过期数据。这里驱动真实交互路径验证失效行为，并带一个对照项
+  //      （改链入/链出元信息不影响 ID，不该失效）—— 防止把失效范围放大到无意义。
+  const runDisabled = () => registry.get("link-run-btn").disabled === true;
+  const lastWrite = (id) => writes.filter((w) => w.id === id).map((w) => w.value).pop() || "";
+  const isGenerated = () => !lastWrite("link-preview").includes("点击「生成链接文件」");
+  // 各失效路径给出的具体原因，必须能在预览区提示里被认出来
+  const REASONS = ["文档目录树已修改", "低层需求列映射已修改", "项目已刷新"];
+  const genAgain = async () => {
+    clickBtn("link-gen-btn");
+    await settle(400);
+  };
+
+  const expectInvalid = async (label, act) => {
+    await genAgain(); // 前置：先回到已生成态
+    if (!isGenerated()) {
+      fail.push(`${label}：前置失败，重新生成后仍未进入已生成态`);
+      return;
+    }
+    await act();
+    await settle(400);
+    // 断言打在「预览区」而不是状态栏：刷新项目会走 doScan → loadDocTree → loadLlrFile，
+    // 整条链路连续写状态栏（「正在扫描…」「正在解析低层需求文件…」），
+    // 失效提示即使打过也会被覆盖。产品已把原因落到常驻的预览区占位上，故断言它。
+    const pv = lastWrite("link-preview");
+    if (isGenerated()) fail.push(`${label}：链接未失效，预览仍在展示上次结果`);
+    if (!runDisabled()) fail.push(`${label}：失效后导出按钮仍可点击（会导出过期数据）`);
+    if (!pv.includes("需重新点击「生成链接文件」"))
+      fail.push(`${label}：预览区未提示需重新生成（实际："${pv.slice(0, 70)}"）`);
+    // 失效原因必须含具体来源，不能是笼统的兜底文案（否则用户不知道该去查什么）
+    if (!REASONS.some((r) => pv.includes(r)))
+      fail.push(`${label}：预览区提示未给出具体失效原因（实际："${pv.slice(0, 70)}"）`);
+    console.log(
+      `  ${label}: 已失效=${!isGenerated()} 按钮禁用=${runDisabled()} 预览提示="${pv
+        .replace(/<[^>]*>/g, "")
+        .slice(0, 40)}"`
+    );
+  };
+
+  // ① 低层需求列映射变更（决定 Parent ID，即链入 ID 的唯一来源）
+  await expectInvalid("改列映射", async () => {
+    const sel = document.getElementById("rel-col-object");
+    const fns = sel.__listeners.change || [];
+    if (!fns.length) fail.push("改列映射：rel-col-object 未绑定 change");
+    else for (const fn of fns) fn({ target: sel });
+  });
+
+  // ② 文档目录树变更：重新扫描项目会经 doScan → loadDocTree 重建树，
+  //    源码文件变化后挂载节点的符号集与链出 ID 全部改变。走 tree-panel 的 contextmenu →
+  //    showCtxMenu 注册「刷新项目」菜单项，再点它，与用户操作完全同路径。
+  //    （不用「删除节点」：那条路要求 docSelection 非空，而节点行是 renderDocTree 动态
+  //      构造的，DOM stub 里拿不到，测的是守卫分支而非失效逻辑。）
+  await expectInvalid("刷新项目改树", async () => {
+    const panel = document.getElementById("tree-panel");
+    const fns = panel.__listeners.contextmenu || [];
+    if (!fns.length) {
+      fail.push("刷新项目改树：tree-panel 未绑定 contextmenu");
+      return;
+    }
+    // showCtxMenu 造的菜单项（class="ctx-item"）的 click 监听里闭包存着 action。
+    // createElement 钩子触发时 className 尚未赋值（赋值语句在返回之后才执行），
+    // 故先把候选 div 全收下来，contextmenu 派发完再按 className 过滤。
+    const candidates = [];
+    createdHook = (el, tag) => {
+      if (tag === "div") candidates.push(el);
+    };
+    try {
+      for (const fn of fns) fn({ preventDefault() {}, clientX: 10, clientY: 10, target: {} });
+    } finally {
+      createdHook = null;
+    }
+    const item = candidates.find((el) => el.className === "ctx-item");
+    if (!item) {
+      fail.push("刷新项目改树：未捕获到右键菜单项");
+      return;
+    }
+    for (const fn of item.__listeners.click || []) fn({});
+    await settle(400);
+  });
+
+  // 对照项：链入/链出元信息只写进每行前三列，不改行数与 ID —— 不该让结果失效
+  await genAgain();
+  if (!isGenerated()) fail.push("对照项：前置失败，未进入已生成态");
+  else {
+    for (const id of [
+      "link-in-project", "link-in-module", "link-in-path",
+      "link-out-project", "link-out-module", "link-out-path",
+    ]) {
+      const el = document.getElementById(id);
+      for (const fn of el.__listeners.input || []) fn({ target: el });
+    }
+    await settle(200);
+    if (!isGenerated()) fail.push("改链入元信息不应让链接失效（元信息不影响 ID）");
+    if (runDisabled()) fail.push("改链入元信息后导出按钮被误禁用");
+    console.log(`  对照·改链入元信息: 仍有效=${isGenerated()} 按钮禁用=${runDisabled()}`);
+  }
+
+  // 失效后重新生成必须能恢复可导出态（确认没把功能打死）
+  await genAgain();
+  if (!isGenerated()) fail.push("失效后重新生成未恢复到已生成态");
+  else if (runDisabled()) fail.push("失效后重新生成，导出按钮仍被禁用（功能被打死）");
+  console.log(`  重新生成后已恢复可导出态: ${isGenerated() && !runDisabled()}`);
+}
+console.log("[9/9] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));
