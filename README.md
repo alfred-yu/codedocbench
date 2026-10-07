@@ -4,6 +4,12 @@
 
 > 📖 **使用教程**：从零开始的图文操作指南见 [docs/用户手册.md](docs/用户手册.md)。
 
+| | |
+|---|---|
+| 仓库 | <https://github.com/alfred-yu/codedocbench>（默认分支 `main`） |
+| 技术栈 | 原生 JS + Vite · Tauri 2 (Rust) · Python 3（纯标准库解析器） |
+| 许可 | [GPL-3.0](LICENSE) |
+
 ## 功能特性
 
 ### 五步向导流程
@@ -35,8 +41,13 @@
 |---|---|
 | 章节号 | 按目录树层级生成，如 `1.1.2` |
 | 需求内容 | 标题行（有章节号）**加粗**；数据行为符号名；解析不到时为 `N/A` |
-| Object Type | 数据行来自源码解析为 `Source Code`；占位行（`N/A`）为 `Comment` |
+| Object Type | **仅** Global Variable Definition 与 Function Definition 两章的数据行为 `Source Code`；Type / Macro / Constant Definition 三章的数据行即使解析自源码也记为 `Comment`；`N/A` 占位行恒为 `Comment` |
 | Parent ID | 仅函数符号行填写：该函数在低层需求文档中所有需求内容行的 ID（换行分隔，排除 `Comment` 行）；其余行为空 |
+
+> **Object Type 口径说明**：为什么只有两章算 `Source Code`？因为 Parent ID 只在函数章生成，
+> 而 Type / Macro / Constant 属于「代码里存在、但不承载需求追溯」的符号——把它们计入 `Source Code`
+> 会让一致性校验把它们算成「Parent ID 缺失」的数据缺陷。该口径在解析器 v1.3.0 统一，
+> 生成侧（`src/main.js` `collectDocRows`）与校验侧（`src/trace-check.js`）保持一致。
 
 **Parent ID 关联规则**：低层需求文档中「文档编号到函数名为止」——需求内容列的值恰为函数名的行是函数名行，其后直到下一个标题行（章节列非空或下一个函数名行）之前的行都是该函数的需求内容行，排除 Object Type 为 `Comment` 的行后取其 ID 集合。参考 `Demo_LLR_Requirements.xlsx` 的组织方式。
 
@@ -106,9 +117,18 @@
 │   ├── smoke-ui.mjs           # 界面冒烟（DOM stub + 伪后端，抓未声明标识符）
 │   ├── test-link-split.mjs    # 链接文件切分回归
 │   ├── test-trace-check.mjs   # 一致性校验回归
-│   └── test-trace-report.mjs  # 检查报告工作簿编码回归（真实 ExcelJS + 桩渲染器）
-├── samples/cproject/        # 示例 C 项目
-└── dist/                    # 前端构建产物
+│   ├── test-trace-report.mjs  # 检查报告工作簿编码回归（真实 ExcelJS + 桩渲染器）
+│   ├── cdp_verify_gen.mjs     # 真实浏览器验证：生成预览分页
+│   ├── cdp_verify_p2.mjs      # 真实浏览器验证：Worker 大文件不卡主线程
+│   ├── cdp_shot_step5.mjs     # 真实浏览器截取手册配图（docs/images/）
+│   └── preview-charts.html    # 报告图表观感自检页（浏览器同步挂载 canvas）
+├── docs/
+│   ├── 用户手册.md             # 图文操作指南
+│   ├── images/                 # 手册配图（由 cdp_shot_step5.mjs 生成）
+│   └── promo/                  # 产品宣传视频
+├── demo/                  # 浏览器演示模式：内嵌合成项目数据 + 自动导览
+├── samples/cproject/      # 示例 C 项目
+└── dist/                  # 前端构建产物（不入库）
 ```
 
 ## 环境要求
@@ -136,7 +156,7 @@ python -m pytest tests/ -v      # Python 解析器
 npm run smoke                   # 构建 + 界面冒烟 + 前端回归（分片 / 一致性校验）
 ```
 
-`tests/test_backend_parse.py` 是解析器的金标准回归基线（16 例），覆盖基础符号识别、多行宏、条件编译剔除、多声明符、函数指针、头文件保护宏过滤、词法安全、元数据字段，以及对 `samples/` 真实文件的冒烟检查。**修改 `backend.py` 解析规则后务必运行**，防止精度回退。
+`tests/test_backend_parse.py` 是解析器的金标准回归基线（**18 例**），覆盖基础符号识别、定义/声明区分、多行宏、条件编译剔除（`#if 0` / `#ifdef` / `#else` 后重新激活）、多声明符、函数指针、注释与字符串词法安全、未闭合记录容错、`#define` 全归宏、`const` 全局变量归常量、头文件保护宏过滤（含变体）、元数据字段，以及对 `samples/` 真实文件的冒烟检查。**修改 `backend.py` 解析规则后务必运行**，防止精度回退。
 
 `npm run smoke` 依次执行四件事：
 
