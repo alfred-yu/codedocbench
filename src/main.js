@@ -10,6 +10,13 @@ import {
   encodeLinkSheet,
   stripIdPrefix,
 } from "./link-split.js";
+// 同名函数（典型是各模块的 static 私有函数）跨文件归属消歧：
+// 用 LLR 里同目录级别的兄弟函数判定该需求块属于哪个源码文件
+import {
+  buildDisambiguateIndex,
+  resolveFunctionBlock,
+  MATCH_UNRESOLVED,
+} from "./fn-disambiguate.js";
 // 一致性校验：代码文档 ↔ 低层需求的双向追溯核对（纯逻辑，可脱离界面回归）
 import { auditTrace } from "./trace-check.js";
 // 报告工作簿编码（ExcelJS 版：数据 sheet + 汇总页嵌入图表 PNG）
@@ -278,9 +285,9 @@ function countDocNodes(nodes, acc) {
   return acc;
 }
 
-/* 与 exportDocExcel 完全同源的行数据（章节号/需求内容/Object Type/Parent ID） */
-function buildGenRows(fnIndex) {
-  return collectDocRows(docTree, [], fnIndex);
+/* 与exportDocExcel 完全同源的行数据（章节号/需求内容/Object Type/Parent ID） */
+function buildGenRows(fnIndex, disambig) {
+  return collectDocRows(docTree, [], fnIndex, disambig);
 }
 
 // 生成预览分页：每页最多渲染 GEN_PAGE_SIZE 行，避免挂载上百文件时一次性将上万行
@@ -300,13 +307,20 @@ async function renderGenPreview() {
     : "未关联";
   const fnNames = [...new Set(collectFunctionNames())];
   const fnIndex = buildLlrFunctionIndex(fnNames);
-  const fnLinked = fnNames.filter((n) => (fnIndex.get(n) || []).length).length;
+  // Parent ID 关联覆盖率按「实际填上的行」统计，避免重名函数被算作已关联却填错
+  const disambig = newDisambigCtx(fnIndex);
+  const genRows = buildGenRows(fnIndex, disambig);
+  const fnLinked = genRows.filter(
+    (r) => r.sectionKey === "functions" && String(r.parent || "").trim()
+  ).length;
+  const fnTotal = fnNames.length;
+  const dupWarn = collectDisambigWarnings(disambig);
   genStats.innerHTML = [
     `<span class="gen-stat">章节 <b>${acc.chapters}</b></span>`,
     `<span class="gen-stat">挂载文件 <b>${acc.files}</b></span>`,
     `<span class="gen-stat">低层需求 <b>${escapeHtml(llr)}</b></span>`,
-    relRows.length && fnNames.length
-      ? `<span class="gen-stat">Parent ID 关联 <b>${fnLinked}/${fnNames.length}</b></span>`
+    relRows.length && fnTotal
+      ? `<span class="gen-stat">Parent ID 关联 <b>${fnLinked}/${fnTotal}</b></span>`
       : "",
     relRows.length && !relColChapter.value
       ? '<span class="gen-stat warn">⚠ 未映射「章节列」，函数 Parent ID 关联可能不准</span>'
@@ -314,9 +328,12 @@ async function renderGenPreview() {
     relRows.length && (!relColContent.value || !relColId.value)
       ? '<span class="gen-stat warn">⚠ 未映射「需求内容列/ID 列」，无法生成 Parent ID</span>'
       : "",
+    dupWarn.length
+      ? `<span class="gen-stat warn">⚠ ${dupWarn.length} 个重名函数无法判定归属，Parent ID 已留空</span>`
+      : "",
   ].join("");
 
-  const rows = buildGenRows(fnIndex);
+  const rows = genRows;
   if (!rows.length) {
     genPreview.innerHTML = '<p class="placeholder">文档目录树为空</p>';
     return;
@@ -407,7 +424,8 @@ async function exportTraceReport() {
   await refreshLlrIfChanged();
 
   const fnNames = collectFunctionNames();
-  const rows = collectDocRows(docTree, [], buildLlrFunctionIndex(fnNames));
+  const { fnIndex, disambig } = buildRowsWithIndex();
+  const rows = collectDocRows(docTree, [], fnIndex, disambig);
   const report = auditTrace({
     rows,
     llrRows: relRows, // 模块内低层需求数据行的变量名是 relRows
@@ -1467,7 +1485,13 @@ function collectFunctionNames() {
   return [...collectFunctionNameFiles().keys()];
 }
 
-/* 建立函数名 → 需求内容行 ID 列表的索引 */
+/* 建立函数名 → 需求内容行 ID 列表的索引
+
+   重名处理：同名函数（典型是各模块的 static 私有函数）在 LLR 里可能有多个需求块，
+   原实现 `index.set(name, current)` 只保留最后一个，导致所有同名函数行被填上
+   同一份 Parent ID —— 那是"错误填了他人的需求"，比空值更危险。
+   现改为保留全部候选块，交给 fn-disambiguate.js 按「同目录级别兄弟函数」定位到具体文件；
+   判定不了时返回 null 并告警，绝不随便挑一个。 */
 function buildLlrFunctionIndex(functionNames) {
   const index = new Map();
   const contentCol = relColContent.value;
@@ -1486,7 +1510,11 @@ function buildLlrFunctionIndex(functionNames) {
     // 章节标题对应的符号即使不在代码树中，也同样终止上一个函数的需求块。
     if ((chapterCol && chapter) || nameSet.has(content)) {
       current = nameSet.has(content) ? [] : null;
-      if (current) index.set(content, current);
+      if (current) {
+        // 同名函数保留全部候选块，附上章节号供消歧使用
+        if (!index.has(content)) index.set(content, []);
+        index.get(content).push({ section: chapter, ids: current });
+      }
       continue; // 函数名行自身不计入需求内容行
     }
     if (!current) continue;
@@ -1496,6 +1524,66 @@ function buildLlrFunctionIndex(functionNames) {
     if (id) current.push(id);
   }
   return index;
+}
+
+/* 同名函数消歧的运行期上下文：统计命中情况并记录判定不了的函数名，
+   供界面给出明确告警（判定不了时 Parent ID 留空，绝不静默填错）。 */
+function newDisambigCtx(fnIndex) {
+  const blocks = [];
+  // 注意：fnIndex 的键是函数名、值是 [{section, ids}]，块对象本身没有 name 字段，
+  // 必须在这里补上——buildDisambiguateIndex 依赖 block.name 建索引，
+  // 漏补会导致章节索引全空、消歧对任何重名都失效（真实踩过）。
+  for (const [name, list] of fnIndex) {
+    for (const b of list) blocks.push({ name, section: b.section, ids: b.ids });
+  }
+  return {
+    index: buildDisambiguateIndex(blocks),
+    unresolved: new Map(), // 函数名 -> 涉及的文件集合
+    hit: 0,
+  };
+}
+
+/* 生成文档行数据：唯一入口，负责建索引 + 消歧上下文（各调用点共用同一口径） */
+function buildRowsWithIndex() {
+  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
+  const disambig = newDisambigCtx(fnIndex);
+  const rows = collectDocRows(docTree, [], fnIndex, disambig);
+  return { fnIndex, disambig, rows };
+}
+
+/* 同名消歧告警：有函数名重名且判定不了归属 —— 这类行的 Parent ID 只能留空，
+   用户需要知道哪些行没填上、以及为什么。 */
+function collectDisambigWarnings(disambig) {
+  if (!disambig || !disambig.unresolved || !disambig.unresolved.size) return [];
+  const out = [];
+  for (const [name, files] of disambig.unresolved) {
+    out.push(
+      `函数「${name}」在低层需求中有多个同名需求块，且无法根据同目录级别的其他函数判定归属` +
+        `（涉及 ${[...files].join("、")}），该函数的 Parent ID 已留空，请核对低层需求章节结构`
+    );
+  }
+  return out;
+}
+
+/* 按当前文件消歧，取该函数在本文件对应的需求 ID 列表。
+   消歧不了时返回空数组（Parent ID 留空），并记录到消歧上下文供告警。 */
+function resolveParentIds(name, fileFunctions, fnIndex, disambig) {
+  if (!fnIndex) return [];
+  const blocks = fnIndex.get(name);
+  if (!blocks || !blocks.length) return [];
+  if (blocks.length === 1) return blocks[0].ids;
+  // 重名：必须按文件消歧，缺上下文时留空而非随便取一个
+  if (!disambig || !fileFunctions) return [];
+  const { block, how } = resolveFunctionBlock(name, fileFunctions, disambig.index);
+  if (!block) {
+    if (how === MATCH_UNRESOLVED) {
+      if (!disambig.unresolved.has(name)) disambig.unresolved.set(name, new Set());
+      disambig.unresolved.get(name).add(fileFunctions.fileTitle || "");
+    }
+    return [];
+  }
+  disambig.hit += 1;
+  return block.ids;
 }
 
 /* 扫描低层需求行（与 buildLlrFunctionIndex 相同的边界规则）：
@@ -1530,7 +1618,7 @@ function scanLlrBlocks(nameSet) {
   return { blockCounts, uncovered };
 }
 
-function collectDocRows(nodes, nums, fnIndex) {
+function collectDocRows(nodes, nums, fnIndex, disambig) {
   const rows = [];
   let idx = 0;
   for (const node of nodes) {
@@ -1539,22 +1627,30 @@ function collectDocRows(nodes, nums, fnIndex) {
     // 挂载的源码文件：输出文件行 + 数据子章节行 + 数据行（.c 5 章 / .h 4 章）
     if (node.type === "file" && isSourceFile(node)) {
       rows.push({ num, title: node.title, objectType: "", parent: "" });
+      // 重名消歧需要"当前文件含哪些函数"，随遍历推进累积
+      const parsed = parseCache.get(node.path)?.data;
+      let fileFunctions = null;
       let sIdx = 0;
       for (const sec of node.children) {
         sIdx += 1;
         const snum = `${num}.${sIdx}`;
         // 数据子章节标题行：标题不参与 Object Type
         rows.push({ num: snum, title: sec.title, objectType: "", parent: "" });
-        const names = dataSectionNames(parseCache.get(node.path)?.data, sec.isData);
+        const names = dataSectionNames(parsed, sec.isData);
         const fromSource = names.length > 0;
+        if (fromSource && sec.isData === "functions" && !fileFunctions) {
+          // 带上文件名：消歧失败时告警要指明是哪个文件的函数
+          fileFunctions = new Set(names);
+          fileFunctions.fileTitle = node.title;
+        }
         const items = fromSource ? names : ["N/A"];
         // 数据行：不参与编号。Object Type 口径：仅全局变量与函数章视为 Source Code，
         // 其余数据章（Type / Macro / Constant）即使解析自源码也按 Comment 处理；N/A 占位恒为 Comment
         for (const it of items) {
           let rowParent = "";
           if (sec.isData === "functions" && fromSource && fnIndex) {
-            const ids = fnIndex.get(it);
-            if (ids && ids.length) rowParent = ids.join("\n");
+            const ids = resolveParentIds(it, fileFunctions, fnIndex, disambig);
+            if (ids.length) rowParent = ids.join("\n");
           }
           rows.push({
             num: "",
@@ -1575,7 +1671,7 @@ function collectDocRows(nodes, nums, fnIndex) {
     // 普通节点行：标题不参与 Object Type；Parent ID 仅供函数行关联低层需求，其余为空
     rows.push({ num, title: node.title, objectType: "", parent: "" });
     if (node.children.length) {
-      rows.push(...collectDocRows(node.children, nums.concat(idx), fnIndex));
+      rows.push(...collectDocRows(node.children, nums.concat(idx), fnIndex, disambig));
     }
   }
   return rows;
@@ -1613,11 +1709,14 @@ function collectParentIdWarnings(fnIndex, rows) {
   // 2)/3) 文档树侧：未关联到任何需求的函数；跨文件同名函数将得到相同的 Parent ID
   const nameFiles = collectFunctionNameFiles();
   for (const [name, files] of nameFiles) {
-    if (!(fnIndex.get(name) || []).length) {
+    const blocks = fnIndex.get(name) || [];
+    if (!blocks.length || !blocks.some((b) => b.ids.length)) {
       warnings.push(`函数「${name}」（${[...files].join("、")}）未关联到低层需求，Parent ID 将为空`);
     }
     if (files.size > 1) {
-      warnings.push(`函数「${name}」在多个文件中同名（${[...files].join("、")}），这些行将关联到相同的 Parent ID`);
+      warnings.push(
+        `函数「${name}」在多个文件中同名（${[...files].join("、")}），将按低层需求中同目录级别的其他函数判定归属`
+      );
     }
   }
 
@@ -1688,11 +1787,14 @@ async function exportDocExcel() {
   await refreshAllFileData();
   await refreshLlrIfChanged();
 
-  const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
-  const rows = collectDocRows(docTree, [], fnIndex);
+  const { fnIndex, disambig, rows } = buildRowsWithIndex();
 
-  // 一致性自检：解析异常 + Parent ID 关联校验（与导出行数据同源），异常时由用户确认后再导出
-  const warnings = [...collectParseWarnings(), ...collectParentIdWarnings(fnIndex, rows)];
+  // 一致性自检：解析异常 + Parent ID 关联校验 + 同名消歧未决（与导出行数据同源）
+  const warnings = [
+    ...collectParseWarnings(),
+    ...collectParentIdWarnings(fnIndex, rows),
+    ...collectDisambigWarnings(disambig),
+  ];
   if (warnings.length) {
     const preview = warnings.slice(0, 5).join("\n");
     const more = warnings.length > 5 ? `\n……共 ${warnings.length} 处` : "";
@@ -1798,11 +1900,12 @@ let linkPage = 0; // 预览当前页（0-based）：一页 = 一个导出文件�
    （刷新项目时 invalidate → doScan → loadDocTree → loadLlrFile 连续写状态栏），
    用户点完只会看到进度，看不到「为什么链接没了」。预览区是常驻的，且紧挨着生成按钮。 */
 let linkInvalidReason = "";
+let linkDupWarnings = []; // 同名函数消歧未决的告警（预览区常驻展示，导出时也会拦一次）
 const LINK_FILE_BASE = "链接文件"; // 分片文件名前缀（单片导出时由用户在「另存为」对话框里自定文件名）
 
 /* 构建链接行：与生成文档页同源（collectDocRows），保证 ID 口径一致 */
-function buildLinkRows(fnIndex) {
-  const rows = collectDocRows(docTree, [], fnIndex);
+function buildLinkRows(fnIndex, disambig) {
+  const rows = collectDocRows(docTree, [], fnIndex, disambig);
   const out = [];
   let sourceCount = 0;
   let linkedCount = 0;
@@ -1855,6 +1958,10 @@ function paintLinkTable() {
     linkSourceCount && !linkLinkedCount
       ? '<span class="gen-stat warn">⚠ 尚未关联低层需求，链入 ID 将为空</span>'
       : "",
+    // 同名函数判定不了归属：必须显式提示，否则「空链入 ID」会被误读为"该函数没有需求"
+    linkDupWarnings.length
+      ? `<span class="gen-stat warn">⚠ ${linkDupWarnings.length} 个重名函数无法判定归属，链入 ID 留空</span>`
+      : "",
   ].join("");
 
   if (!linkRows.length) {
@@ -1904,8 +2011,17 @@ function paintLinkTable() {
         }>下一页</button>` +
         "</span>"
       : "";
+  // 同名消歧未决的明细：列出具体函数名与涉及文件，让用户知道该去核对哪几处
+  const dupNotice = linkDupWarnings.length
+    ? '<div class="link-dup-notice"><b>同名函数无法判定归属（链入 ID 已留空）</b><ul>' +
+      linkDupWarnings
+        .map((w) => `<li>${escapeHtml(w)}</li>`)
+        .join("") +
+      "</ul></div>"
+    : "";
   // 表头与表体分属两个区域：表头固定、表体独立纵向滚动（与步骤 3/4 同款布局）
   linkPreviewEl.innerHTML =
+    dupNotice +
     `<div class="rel-preview-head"><table class="rel-table link-table">${cols}${head}</table></div>` +
     `<div class="rel-preview-scroll"><table class="rel-table link-table">${cols}<tbody>${body}</tbody></table></div>` +
     `<div class="rel-preview-info link-preview-info"><span class="link-page-info">${info}</span>${pager}</div>`;
@@ -1960,10 +2076,15 @@ async function generateLink() {
   await refreshAllFileData();
   await refreshLlrIfChanged();
   const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
-  const built = buildLinkRows(fnIndex);
+  const disambig = newDisambigCtx(fnIndex);
+  const built = buildLinkRows(fnIndex, disambig);
+  // 同名函数判定不了归属时必须明确告知：这些行的链入 ID 只能是空，
+  // 若不提示，用户会把"空链入 ID"当成"该函数没有需求"，掩盖了真实问题
+  const dupWarn = collectDisambigWarnings(disambig);
   linkRows = built.rows;
   linkSourceCount = built.sourceCount;
   linkLinkedCount = built.linkedCount;
+  linkDupWarnings = dupWarn;
   linkGenerated = true;
   linkInvalidReason = ""; // 已按最新上游数据重算，失效原因随之作废
   linkPage = 0; // 重新生成后回到第 1 页
@@ -1982,6 +2103,7 @@ function resetLinkGeneration(keepReason) {
   linkGenerated = false;
   linkPage = 0;
   if (!keepReason) linkInvalidReason = "";
+  if (!keepReason) linkDupWarnings = [];
   linkRunBtn.disabled = true;
   linkRunBtn.title = "请先点击「生成链接文件」";
   paintLinkTable();
@@ -2008,7 +2130,7 @@ async function linkRowsUpToDate() {
   await refreshAllFileData();
   await refreshLlrIfChanged();
   const fnIndex = buildLlrFunctionIndex(collectFunctionNames());
-  const rebuilt = buildLinkRows(fnIndex);
+  const rebuilt = buildLinkRows(fnIndex, newDisambigCtx(fnIndex));
   if (JSON.stringify(rebuilt.rows) === JSON.stringify(linkRows)) return true;
   invalidateLinkGeneration("文档目录树、源码或低层需求在生成之后发生了变化");
   return false;
@@ -2041,6 +2163,21 @@ async function exportLinkExcel() {
   if (!linkGenerated) {
     alert("请先点击「生成链接文件」生成链接文件后再导出");
     return;
+  }
+  // 同名函数消歧未决时链入 ID 为空 —— 这是「填不出来」而非「本来就没有需求」，
+  // 两者对导入系统的含义完全不同，必须让用户确认后再导出
+  if (linkDupWarnings.length) {
+    const preview = linkDupWarnings.slice(0, 4).join("\n");
+    const more = linkDupWarnings.length > 4 ? `\n……共 ${linkDupWarnings.length} 处` : "";
+    if (
+      !confirm(
+        `有 ${linkDupWarnings.length} 个同名函数无法判定归属，其链入 ID 为空：\n${preview}${more}\n\n` +
+          `这通常意味着低层需求的章节结构无法区分这些同名函数（如同名 static 函数）。\n` +
+          `请核对低层需求中这些函数是否分属不同章节。仍要继续导出吗？`
+      )
+    ) {
+      return;
+    }
   }
   // 兜底核验：源码被外部程序改动、或低层需求文件被外部修改（两者都不经过界面交互，
   // 拿不到 invalidateLinkGeneration 的钩子）都可能让上次生成的结果过期。

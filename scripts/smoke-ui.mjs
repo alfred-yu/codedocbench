@@ -187,6 +187,81 @@ for (let i = 1; i <= ORPHAN_COUNT; i++) {
 const REQ_TOTAL = FUNC_COUNT + ORPHAN_COUNT; // 175 条 Requirement（120 已关联 + 55 孤儿）
 const REQ_ORPHAN_RATIO = (ORPHAN_COUNT / REQ_TOTAL) * 100; // 31.4%
 const EXPECT_REQ_RATIO = REQ_ORPHAN_RATIO.toFixed(1) + "%";
+
+/* ---------- 第 10 组：同名函数消歧场景（big.c 与 dup.c 各有一个同名 static 函数） ----------
+   真实痛点：各模块都用 static 定义同名私有函数（都叫 A）。
+   低层需求里 A 有多个需求块，靠「同目录级别的兄弟函数」判定每个块属于哪个文件。
+   本组挂载两个 .c：
+     big.c : dup_fn_001（外加原有的120 个 fn_xxx）
+     dup.c : dup_fn_001 + dup_helper_a + dup_helper_b
+   低层需求（独立文件 DUP_LLR_PATH）里 dup_fn_001 有两个块：
+     9.1.1.1  兄弟 = dup_helper_a/b → 可判定为 dup.c
+     9.2.1.1  同父章节下无兄弟 → 应判为未决、留空并告警
+
+   注意：big.c 用的是新路径（DUP_BIG_SOURCE_PATH），不能复用 samples 里那个 ——
+   parseCache 会按 mtime 命中缓存，复用同路径会导致「重名场景下big.c 不含 dup_fn_001」，
+   断言反而假通过（前 8 组已把该路径解析过一次）。 */
+const DUP_BIG_SOURCE_PATH = path.join(ROOT, "samples", "cproject", "src", "big_dup.c");
+const DUP_SOURCE_PATH = path.join(ROOT, "samples", "cproject", "src", "dup.c");
+const DUP_LLR_PATH = path.join(ROOT, "Demo_LLR_Dup.xlsx");
+/* 同名函数：big.c 与 dup.c 各有一个 static 的 dup_fn_001 */
+const DUP_SHARED_FN_BIG = { name: "dup_fn_001", isDefinition: true };
+const DUP_FUNCS = [
+  { name: "dup_fn_001", isDefinition: true },
+  { name: "dup_helper_a", isDefinition: true },
+  { name: "dup_helper_b", isDefinition: true },
+];
+const DUP_LLR_AOA = [
+  LLR_HEADER,
+  // big.c 的 120 个函数照旧各占一个块（章节 4.2.4.1.*），保证原有数据不被本组破坏
+  ...Array.from({ length: FUNC_COUNT }, (_, i) => {
+    const name = "fn_" + String(i + 1).padStart(3, "0");
+    return [
+      ["", `4.2.4.1.${i + 1}`, name, ""],
+      [`DEMO_LL_R_${i + 1}`, "", `The ${name} function shall do its job.`, "Requirement"],
+    ];
+  }).flat(), // 展开成「一元素=一行」（aoa_to_sheet 要求行数组，漏 flatten 会整列错位）
+  // ---- 以下为同名场景：dup_fn_001 在 big.c 与 dup.c 各有一个 static 定义 ----
+  // big.c 里那个 dup_fn_001 的块（9.2.1.1）同父章节下无兄弟 → 应判为未决、留空
+  ["", "9.2.1.1", "dup_fn_001", ""],
+  ["DEMO_DUP_B_1", "", "dup_fn_001 in big.c shall...", "Requirement"],
+  // dup.c 的三个函数在章节 9.1.* 下，dup_fn_001 有兄弟 dup_helper_a/b 可依据 → 可判定
+  ["", "9.1.1", "dup.c module", ""],
+  ["", "9.1.1.1", "dup_fn_001", ""],
+  ["DEMO_DUP_A_9001", "", "dup_fn_001 in dup.c shall...", "Requirement"],
+  ["", "9.1.1.2", "dup_helper_a", ""],
+  ["DEMO_DUP_HA_9001", "", "dup_helper_a shall...", "Requirement"],
+  ["", "9.1.1.3", "dup_helper_b", ""],
+  ["DEMO_DUP_HB_9002", "", "dup_helper_b shall...", "Requirement"],
+];
+/* 注意：上面已用 ...Array.from 展开，无需 .flat() —— 再 flat 会把表头行也展开掉 */
+const DUP_LLR_BYTES = (() => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(DUP_LLR_AOA), "LLR");
+  return Array.from(new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "buffer" })));
+})();
+/* 重名场景专用项目存档：挂载 big.c + dup.c，关联 DUP_LLR_PATH */
+const DUP_PROJECT_PAYLOAD = JSON.stringify({
+  version: 1,
+  savedAt: 0,
+  docTree: [
+    { id: 1, type: "file", title: "big_dup.c", path: DUP_BIG_SOURCE_PATH, children: [] },
+    { id: 2, type: "file", title: "dup.c", path: DUP_SOURCE_PATH, children: [] },
+  ],
+  llr: {
+    path: DUP_LLR_PATH,
+    mapping: {
+      chapter: "Section",
+      id: "Requirement ID",
+      content: "Title / Requirement Text",
+      objectType: "Type",
+    },
+  },
+  link: {
+    inProject: "P-IN", inModule: "SWLR008", inPath: "P/LLR/",
+    outProject: "P-OUT", outModule: "SCTD004", outPath: "P/CODE/",
+  },
+});
 const LLR_BYTES = (() => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(LLR_AOA), "LLR");
@@ -212,6 +287,12 @@ const PROJECT_PAYLOAD = JSON.stringify({
   },
 });
 
+/* 运行时可切换的项目存档 / 需求文件：第 10 组「同名函数消歧」换一套（含dup.c 与同名函数），
+   验证完再换回默认场景。必须在各常量定义之后声明（否则 TDZ）。 */
+let activePayload = PROJECT_PAYLOAD;
+let activeLlrPath = LLR_PATH;
+let activeLlrBytes = LLR_BYTES;
+
 const invoked = [];
 const savedFiles = [];
 const tauriInvoke = async (cmd, args) => {
@@ -226,14 +307,29 @@ const tauriInvoke = async (cmd, args) => {
   if (cmd === "scan_dir") return { type: "dir", name: path.basename(ROOT), path: args.path, children: [] };
   if (cmd === "read_file") {
     if (String(args.path).endsWith(PROJECT_DATA_FILENAME)) {
-      return Array.from(new TextEncoder().encode(PROJECT_PAYLOAD));
+      return Array.from(new TextEncoder().encode(activePayload));
     }
-    if (args.path === LLR_PATH) return LLR_BYTES; // 低层需求 Excel
+    if (args.path === activeLlrPath) return activeLlrBytes; // 低层需求 Excel
+    if (args.path === LLR_PATH) return LLR_BYTES;
+    if (args.path === DUP_LLR_PATH) return DUP_LLR_BYTES;
     throw new Error("ENOENT: 文件不存在"); // 导出时的同名覆盖探测走这条
   }
-  if (cmd === "parse_file")
+  if (cmd === "parse_file") {
+    // 重名场景的两个 .c：big_dup.c 有一堆 fn_xxx 外加同名 static 的 dup_fn_001，
+    // dup.c 也有一个 dup_fn_001 + 两个只有它才有的兄弟函数（消歧的关键依据）
+    if (args.path === DUP_BIG_SOURCE_PATH) {
+      return {
+        functions: [...FUNCS, DECL_FN_001, DUP_SHARED_FN_BIG],
+        structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1,
+      };
+    }
+    if (args.path === DUP_SOURCE_PATH) {
+      return { functions: DUP_FUNCS, structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
+    }
     return { functions: [...FUNCS, DECL_FN_001], structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
-  if (cmd === "file_mtime") return 1;
+  }
+  // 两份 LLR 各自稳定的 mtime：内容不变即不会触发外部修改重读
+  if (cmd === "file_mtime") return args.path === DUP_LLR_PATH ? 2 : 1;
   if (cmd === "save_file") {
     savedFiles.push({ path: args.path, data: args.data });
     return null;
@@ -271,9 +367,9 @@ console.log("[smoke] 打包产物:", bundle);
 
 try {
   await import("file:///" + path.join(DIST, bundle).replace(/\\/g, "/"));
-  console.log("[1/9] 模块顶层执行完成");
+  console.log("[1/10] 模块顶层执行完成");
 } catch (e) {
-  console.log("[1/9] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
+  console.log("[1/10] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
   process.exit(1);
 }
 
@@ -304,12 +400,12 @@ const clickSelectorIn = (containerId, sel) => {
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
 if (!treeEl) {
-  console.log("[2/9] 未找到打开项目的 click 监听 ❌");
+  console.log("[2/10] 未找到打开项目的 click 监听 ❌");
   process.exit(1);
 }
 for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
 await settle(400);
-console.log("[2/9] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
+console.log("[2/10] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
 if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
 if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
 // P2 回归：LLR 恢复加载走 showRelLoading(true)→(false)，状态条提示必须在复位时清掉
@@ -317,7 +413,7 @@ if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的�
 const statusText = () => String((registry.get("status") && registry.get("status").textContent) || "");
 if (statusText().includes("正在解析")) fail.push(`解析完成后状态条未复位：「${statusText()}」`);
 
-console.log("[3/9] 步骤 5 按钮接线 +「未生成不可导出」守卫");
+console.log("[3/10] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");
 const runBound = clickBtn("link-run-btn");
 await settle(80);
@@ -328,7 +424,7 @@ if (!runBound) fail.push("link-run-btn 未绑定 click");
 if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
 if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
-console.log("[4/9] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
+console.log("[4/10] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
 const wMark = writes.length;
 clickBtn("link-gen-btn");
 await settle(400);
@@ -383,7 +479,7 @@ console.log(`  上一页后: ${pageLabel(h2b)} 行数=${rowsIn(h2b)} 首行链�
 if (pageLabel(h2b) !== "2/3") fail.push("「上一页」未回到第 2 页：" + pageLabel(h2b));
 if (firstInId(h2b) !== "51") fail.push("返回第 2 页后首行链入 ID 应为 51，实际 " + firstInId(h2b));
 
-console.log("[5/9] 导出分片：校验真实写盘字节");
+console.log("[5/10] 导出分片：校验真实写盘字节");
 clickBtn("link-run-btn");
 await settle(600);
 // 注意：save_file 也用于写工程数据文件（.codedocbench.json），这里只看导出的 Excel
@@ -432,7 +528,7 @@ if (previewHtml.includes("DEMO_LL_R_")) fail.push("预览中的链入 ID 仍带�
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
-console.log("[6/9] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
+console.log("[6/10] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
 {
   // DOM stub 的 getElementById 永远返回对象，标记丢失不会暴露；故直接核对构建产物里的节点。
   // 结果已从对话框改为导出报告：对话框标记必须不存在，防止死节点回潮
@@ -505,7 +601,7 @@ console.log("[6/9] 一致性检查报告导出：按钮触发 → 另存为 → 
   console.log("  报告已导出，摘要:", lastAlert.replace(/\n/g, " | ").slice(0, 170));
 }
 
-console.log("[7/9] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
+console.log("[7/10] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
 {
   // 用户操作顺序点击 stepper 解锁步骤（maxStep 闸门），最终触发 renderGenPreview
   const stepFns = registry.get("stepper") && registry.get("stepper").__listeners.click;
@@ -557,7 +653,7 @@ console.log("[7/9] 生成预览分页：进入步骤 4，断言只渲染当前�
   }
 }
 
-console.log("[8/9] 链接失效：上游数据变更后已生成的链接必须失效（防静默导出过期数据）");
+console.log("[8/10] 链接失效：上游数据变更后已生成的链接必须失效（防静默导出过期数据）");
 {
   // 背景：步骤 5 的链接行依赖「文档目录树 + 源码解析结果 + 低层需求数据」三者。
   //      修复前这三条上游变更路径都不复位，用户看到的仍是上次的预览 + 可点的导出按钮，
@@ -663,7 +759,135 @@ console.log("[8/9] 链接失效：上游数据变更后已生成的链接必须�
   else if (runDisabled()) fail.push("失效后重新生成，导出按钮仍被禁用（功能被打死）");
   console.log(`  重新生成后已恢复可导出态: ${isGenerated() && !runDisabled()}`);
 }
-console.log("[9/9] 错误文案 / 未处理异常");
+
+console.log("[9/10] 同名函数消歧：跨文件同名函数必须关联到各自的需求（静态重名场景）");
+{
+  // 背景：真实项目里各模块都用 static 定义同名私有函数（都叫 A）。
+  //      修复前以纯函数名为键建索引，同名函数只保留一份需求块 →
+  //      所有同名函数行被填上同一份 Parent ID —— 是"错误填了他人的需求"，比空值更危险。
+  // 本组换一份项目存档：big.c 里的 dup_fn_001 与 dup.c 里的 dup_fn_001 同名，
+  //  低层需求里该函数有两个块（9.1.1.1 有兄弟可依据 → 可判定；9.2.1.1 无兄弟 → 应判为未决）。
+  const lastWriteOf = (id) => writes.filter((w) => w.id === id).map((w) => w.value).pop() || "";
+
+  activePayload = DUP_PROJECT_PAYLOAD;
+  activeLlrPath = DUP_LLR_PATH;
+  activeLlrBytes = DUP_LLR_BYTES;
+  globalThis.window.__DUP_PROBE = true;
+
+  // 走「刷新项目」路径（tree-panel 的 contextmenu → showCtxMenu → 刷新项目 → rescanProject
+  // → doScan → loadDocTree）：它会重新读 activePayload 与 activeLlrPath，
+  // 与用户改完源码后手动刷新的路径完全一致。
+  // （不能用 openProject：open-hint 仅在未打开项目时响应，且路径固定换不了场景）
+  const panel = document.getElementById("tree-panel");
+  const ctxFns = panel.__listeners.contextmenu || [];
+  if (!ctxFns.length) {
+    fail.push("同名消歧：tree-panel 未绑定 contextmenu（刷新项目路径不可用）");
+  } else {
+    const candidates = [];
+    createdHook = (el, tag) => {
+      if (tag === "div") candidates.push(el);
+    };
+    try {
+      for (const fn of ctxFns) fn({ preventDefault() {}, clientX: 10, clientY: 10, target: {} });
+    } finally {
+      createdHook = null;
+    }
+    const item = candidates.find((el) => el.className === "ctx-item");
+    if (!item) fail.push("同名消歧：未捕获到右键菜单项");
+    else {
+      for (const fn of item.__listeners.click || []) fn({});
+      await settle(1400);
+    }
+  }
+
+  // 进入步骤 5（步骤按钮dataset.step=5）
+  const step5El = [...registry.values()].find(
+    (e) => e.dataset && String(e.dataset.step) === "5" && (e.__listeners.click || []).length
+  );
+  if (step5El) for (const fn of step5El.__listeners.click) fn({});
+  await settle(300);
+  // loadDocTree 里 refreshAllFileData / restoreLlr 均未 await（解析 2 个 .c + 读 LLR
+  // 还要过一遍 Worker），等待要留足，否则会拿着空的需求数据去生成
+  await settle(2500);
+  if (!clickBtn("link-gen-btn")) fail.push("同名消歧：未找到「生成链接文件」按钮");
+  else await settle(1200);
+
+  const prevHtml = lastWriteOf("link-preview");
+  const statsHtml = lastWriteOf("link-stats");
+
+  if (!prevHtml.includes("<tbody"))
+    fail.push("同名消歧：未生成出链接表格，前预览=" + prevHtml.slice(0, 90));
+
+  // 预览按导出文件分页（123 行 → 3 页），dup.c 在第 3 页 —— 必须翻到最后一页才能看到它。
+  // （只看第 1 页会漏掉整个 dup.c，这类"断言打在错误的页上"的坑最容易假阴性。）
+  // 分页按钮是 paintLinkTable 写在 innerHTML 里的，必须用 clickSelector（走 selector 缓存），
+  // 直接 getElementById 拿不到 —— 那是真实DOM 里动态生成、stub 中不存在于 registry 的节点。
+  let allHtml = prevHtml;
+  for (let i = 0; i < 6; i++) {
+    if (/id="link-page-next"[^>]*disabled/.test(lastWriteOf("link-preview"))) break;
+    if (!clickSelector("#link-page-next")) break;
+    await settle(350);
+    allHtml = lastWriteOf("link-preview");
+  }
+  console.log(`  已翻至末页（预览共3 页，dup.c 在末页）`);
+
+  // 核心断言：链入 ID 已去前缀（DEMO_DUP_HA_1 → 1、HA 与 B 都成 1，故改用不撞车的编号）：
+  //   dup_helper_a → DEMO_DUP_HA_9001 → 链入 ID 9001
+  //   dup_helper_b → DEMO_DUP_HB_9002 → 链入 ID 9002
+  //   dup.c 的 dup_fn_001 → DEMO_DUP_A_9001（判定成功）
+  //   big.c 的 dup_fn_001 → 无兄弟可依据 → 判定不了 → 留空 + 告警
+  const ids = [...allHtml.matchAll(/class="link-id">([\s\S]*?)<\/td>/g)].map((m) =>
+    m[1].replace(/<[^>]*>/g, "").trim()
+  );
+  const hasHelperA = ids.includes("9001");
+  const hasHelperB = ids.includes("9002");
+  if (!hasHelperA) fail.push("同名消歧：dup_helper_a 未关联到自己的需求（链入 ID 应含 9001）");
+  if (!hasHelperB) fail.push("同名消歧：dup_helper_b 未关联到自己的需求（链入 ID 应含 9002）");
+
+  const dupNotice = allHtml.includes("同名函数无法判定归属");
+  if (!dupNotice)
+    fail.push(
+      "同名消歧：存在无法判定归属的同名函数时预览区未出现告警" +
+        "（空链入 ID 会被误读为『该函数没有需求』）"
+    );
+  // 核心：未决的同名函数必须**留空**，绝不能被填成另一个文件的需求
+  // （链入 ID 已去前缀：DEMO_DUP_B_1 → 1。big.c 的 dup_fn_001 若错填 9.2 块会出现 "1"）
+  const statsText = statsHtml.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  const linkedMatch = /已关联需求\s*(\d+)\/(\d+)/.exec(statsText);
+  const linked = linkedMatch ? Number(linkedMatch[1]) : -1;
+  const totalRows = linkedMatch ? Number(linkedMatch[2]) : -1;
+  // 124 行里应恰好有 1 行未关联（big.c 的 dup_fn_001），其余 123 行全部关联
+  if (linked !== 123 || totalRows !== 124)
+    fail.push(
+      `同名消歧：未决的同名函数应留空（124 行中 123 行已关联），实际 ${linked}/${totalRows}`
+    );
+  console.log(`  兄弟函数各归各位=${hasHelperA && hasHelperB}  未决告警=${dupNotice}  未决行留空=${linked === 123}`);
+  console.log(`  统计: ${statsText.slice(0, 76)}`);
+
+  // 导出前必须确认拦截，且用户取消后不写盘
+  savedFiles.length = 0;
+  const alertsBefore = alerts.length;
+  globalThis.confirm = (m) => {
+    alerts.push("[confirm]" + String(m));
+    return false;
+  };
+  clickBtn("link-run-btn");
+  await settle(700);
+  const confirmHit = alerts
+    .slice(alertsBefore)
+    .some((a) => a.startsWith("[confirm]") && a.includes("同名"));
+  if (dupNotice && !confirmHit) fail.push("同名消歧：存在未决同名函数时，导出前未弹确认拦截");
+  if (dupNotice && savedFiles.length) fail.push("同名消歧：用户取消确认后仍写出了文件");
+  globalThis.confirm = () => true;
+  console.log(`  导出前确认拦截=${confirmHit}  取消后未写盘=${savedFiles.length === 0}`);
+
+  // 还原默认场景，避免影响后续
+  activePayload = PROJECT_PAYLOAD;
+  activeLlrPath = LLR_PATH;
+  activeLlrBytes = LLR_BYTES;
+}
+
+console.log("[10/10] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));

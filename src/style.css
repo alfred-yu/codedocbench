@@ -566,6 +566,28 @@ body {
   max-width: 520px;
 }
 
+/* 步骤 5 同名函数消歧未决明细：常驻在预览区顶部，导出前也会拦一次 */
+.link-dup-notice {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #f3c9c4;
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.link-dup-notice ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.link-dup-notice li {
+  margin: 2px 0;
+}
+
 .splitter {
   width: 6px;
   flex: none;
