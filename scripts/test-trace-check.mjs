@@ -1,6 +1,7 @@
 // 一致性校验模块（src/trace-check.js）回归测试
 //   覆盖：① 空 Parent ID 按章节分组 ② Requirement 反向覆盖 ③ 悬空引用 / 重复追溯 /
 //         口径差异 ④ 列映射缺失降级 ⑤ 真实项目数据端到端 ⑥ 灵敏度注入 ⑦ 报告导出
+//         ⑧ 未决同名函数不计入遗漏/孤儿（单列为「未决」，空值语义＝填不出来）
 // 纯 Node 运行，不依赖 DOM / Tauri：npm run test:trace-check
 import fs from "fs";
 import path from "path";
@@ -501,6 +502,118 @@ console.log("[7/7] 报告导出：AOA 结构与工作簿编码");
   eq("按数据章节柱状图：空值数", byId.codeBySection.values, realReport.code.sections.map((s) => s.empty));
   eq("附带核对柱状图：0 / 0 / 0", byId.extra.values, [0, 0, 0]);
   ok("每个图表均有锚点单元格（列 F 起）", specs.every((s) => /^[A-Z]+\d+$/.test(s.anchor)));
+}
+
+console.log("");
+console.log("[8/8] 未决同名函数：不计入遗漏/孤儿，单列为「未决」");
+{
+  /* 场景：两个 .c 各有一个 static 的 Dup_Fn，低层需求里Dup_Fn 有两个块，
+     其中一个同目录下有该文件独有的兄弟（可判定），另一个无兄弟（判不出来 → 留空）。
+     若不区分，第二个块的需求会被算成「未被引用」，Dup_Fn 的空值被算成「遗漏」——
+     用户会把工具的局限误判成数据缺陷。 */
+  const llr = [
+    { id: "L_1", sec: "9.1.1", content: "mod1", type: "" },
+    { id: "", sec: "9.1.1.1", content: "Dup_Fn", type: "" },
+    { id: "R_OK", sec: "", content: "Dup_Fn in mod1 shall...", type: "Requirement" },
+    { id: "", sec: "9.1.1.2", content: "Helper_1", type: "" },
+    { id: "R_H", sec: "", content: "Helper_1 shall...", type: "Requirement" },
+    { id: "L_2", sec: "9.2.1", content: "mod2", type: "" },
+    { id: "", sec: "9.2.1.1", content: "Dup_Fn", type: "" },
+    { id: "R_PEND", sec: "", content: "Dup_Fn in mod2 shall...", type: "Requirement" },
+    // 未决块后必须还有下一个块来切断边界，否则后续需求会被并入未决块
+    // （块边界规则：章节列非空即开新块。真实 LLR 里函数块后必有下一个块）
+    { id: "", sec: "9.2.1.2", content: "Solo_2", type: "" },
+    { id: "R_ORPH", sec: "", content: "Nobody references me", type: "Requirement" },
+  ];
+  const rows = [
+    { num: "1", title: "mod1.c", objectType: "", parent: "" },
+    { num: "1.5", title: "Function Definition", objectType: "", parent: "" },
+    // mod1 的 Dup_Fn 靠兄弟 Helper_1 判定成功 → 拿到自己块的需求 R_OK
+    { num: "", title: "Dup_Fn", objectType: "Source Code", parent: "R_OK", sectionKey: "functions", sectionTitle: "Function Definition" },
+    { num: "", title: "Helper_1", objectType: "Source Code", parent: "R_H", sectionKey: "functions", sectionTitle: "Function Definition" },
+    { num: "2", title: "mod2.c", objectType: "", parent: "" },
+    { num: "2.5", title: "Function Definition", objectType: "", parent: "" },
+    // mod2 的 Dup_Fn 无兄弟可依据 → 判定不了 → 留空（属未决）
+    { num: "", title: "Dup_Fn", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "Function Definition" },
+    { num: "", title: "Real_Gap", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "Function Definition" },
+  ];
+  const colMap = { id: "id", content: "content", type: "type", chapter: "sec" };
+  const nameSet = new Set(["Dup_Fn", "Helper_1", "Real_Gap"]);
+
+  const pendingReport = auditTrace({ rows, llrRows: llr, colMap, nameSet, unresolvedNames: new Set(["Dup_Fn"]) });
+
+  // 代码侧：4 个 Source Code 行 → mod2 的 Dup_Fn 属未决不算遗漏，Real_Gap 才是真遗漏
+  eq("未决行不计入 emptyParent", pendingReport.code.emptyParent, 1);
+  eq("真·遗漏只含 Real_Gap",
+    pendingReport.code.sections.find((s) => s.key === "functions").details.map((d) => d.title),
+    ["Real_Gap"]);
+  eq("未决代码行被单独收集", pendingReport.pending.codeRows.map((r) => r.title), ["Dup_Fn"]);
+  eq("函数章分组：total 4 / empty 1 / pending 1",
+    (() => { const s = pendingReport.code.sections.find((x) => x.key === "functions"); return [s.total, s.empty, s.pending]; })(),
+    [4, 1, 1]);
+  eq("空值占比分母不变（1/4）", pendingReport.code.emptyRatio, 1 / 4);
+
+  // 需求侧：R_PEND 属未决不算孤儿，R_ORPH 才是真孤儿
+  eq("未决需求不计入 orphaned", pendingReport.requirement.orphaned, 1);
+  eq("真·孤儿是 R_ORPH", pendingReport.requirement.orphans.map((o) => o.id), ["R_ORPH"]);
+  eq("未决需求被单独收集", pendingReport.pending.reqs.map((r) => r.id), ["R_PEND"]);
+  eq("未决函数名已记录", pendingReport.pending.names, ["Dup_Fn"]);
+  eq("已引用不含未决与孤儿", pendingReport.requirement.referenced, 2); // R_OK + R_H
+
+  // 对照：同一份数据不传 unresolvedNames 时，未决会被误算成遗漏+孤儿
+  const plainReport = auditTrace({ rows, llrRows: llr, colMap, nameSet });
+  eq("对照·不传未决集合时 Dup_Fn 被算成遗漏", plainReport.code.emptyParent, 2);
+  eq("对照·不传未决集合时 R_PEND 被算成孤儿", plainReport.requirement.orphaned, 2);
+
+  // 报告：汇总页与明细页都要标出来，且未决不能与真问题混为一谈
+  const sheets = buildTraceReportSheets(pendingReport);
+  const sum = sheets.find((s) => s.name === "校验汇总").aoa;
+  const sumTxt = sum.map((r) => r.map((c) => String(c ?? "")).join(" ")).join("|");
+  ok("汇总页出现「未决」小节", sumTxt.includes("同名函数未决"), sumTxt.slice(0, 80));
+  ok("汇总页列出未决函数名", sumTxt.includes("Dup_Fn"));
+  ok("列映射提示说明未决不计遗漏", String(sum.find((r) => r[0] === "列映射提示")[1]).includes("不计入遗漏"));
+  ok("结论里带未决计数", String(sum.find((r) => r[0] === "结论")[1]).includes("同名未决 1 行 / 1 条需求"),
+    String(sum.find((r) => r[0] === "结论")[1]));
+
+  const codeSheet = sheets.find((s) => s.name === "代码侧-SourceCode明细").aoa;
+  // Dup_Fn 有两行（mod1 已关联、mod2 未决），只有未决那行写明原因
+  const dupRows = codeSheet.filter((r) => r[2] === "Dup_Fn");
+  eq("Dup_Fn 两行：已关联行带 Parent ID", dupRows[0][3], "R_OK");
+  eq("代码侧未决行 Parent ID 列写明原因", dupRows[1][3], "（同名函数无法判定归属）");
+  const gapRow = codeSheet.find((r) => r[2] === "Real_Gap");
+  eq("真·遗漏行 Parent ID 仍留空", gapRow[3], "");
+
+  const reqSheet = sheets.find((s) => s.name === "需求侧-一致性明细").aoa;
+  eq("需求侧未决行标记为归属未决", reqSheet.find((r) => r[0] === "R_PEND")[2], "（归属未决）");
+  eq("需求侧真孤儿仍标记未被引用", reqSheet.find((r) => r[0] === "R_ORPH")[2], "（未被引用）");
+
+  // 图表：环形图必须把未决单列为第三段，否则「空 Parent ID」总数会被误读
+  const sp = Object.fromEntries(buildTraceChartSpecs(pendingReport).map((s) => [s.id, s]));
+  eq("视角一环形图分三段", sp.codeOverview.categories,
+    ["已关联 Parent ID", "空 Parent ID（未决同名）", "空 Parent ID"]);
+  eq("视角一环形图数值（已关联 2 / 未决 1 / 遗漏 1）", sp.codeOverview.values, [2, 1, 1]);
+  eq("视角二环形图分三段", sp.reqOverview.categories,
+    ["已引用", "未被引用（归属未决）", "未被引用"]);
+  eq("视角二环形图数值（已引用 2 / 未决 1 / 孤儿 1）", sp.reqOverview.values, [2, 1, 1]);
+
+  // 三段必须自洽：已关联 + 未决 + 遗漏 = Source Code 总数；已引用 + 未决 + 孤儿 = Requirement 总数。
+  // 这是环形图分段与占比能互相对账的前提，改动口径时最容易破坏，故固化为不变式。
+  eq("代码侧三段自洽（已关联+未决+遗漏 = 总数）",
+    pendingReport.code.filledParent + pendingReport.pending.codeRows.length + pendingReport.code.emptyParent,
+    pendingReport.code.sourceTotal);
+  eq("需求侧三段自洽（已引用+未决+孤儿 = 总数）",
+    pendingReport.requirement.referenced + pendingReport.pending.reqCount + pendingReport.requirement.orphaned,
+    pendingReport.requirement.total);
+  eq("未决行不计入 filledParent（Parent ID 实为空，不能算已关联）",
+    pendingReport.code.filledParent, 2);
+
+  // 对照：无未决时图表仍是两段（不得改变既有观感）
+  const sp2 = Object.fromEntries(buildTraceChartSpecs(plainReport).map((s) => [s.id, s]));
+  eq("无未决时视角一仍两段", sp2.codeOverview.categories, ["已关联 Parent ID", "空 Parent ID"]);
+  eq("无未决时汇总页无未决小节",
+    buildTraceReportSheets(plainReport).find((s) => s.name === "校验汇总").aoa
+      .map((r) => r.map((c) => String(c ?? "")).join(" ")).join("|").includes("同名函数未决"),
+    false);
 }
 
 console.log("");

@@ -436,6 +436,9 @@ async function exportTraceReport() {
       chapter: relColChapter.value,
     },
     nameSet: new Set(fnNames),
+    // 同名函数消歧未决的函数名：其空 Parent ID 语义是「归属填不出来」而非「没有需求」，
+    // 报告里单列为「未决」，不计入遗漏与孤儿（否则会把工具局限误判成数据缺陷）
+    unresolvedNames: new Set(disambig.unresolved.keys()),
   });
 
   const wb = await encodeTraceWorkbook(report, { generatedAt: nowText() });
@@ -451,11 +454,17 @@ async function exportTraceReport() {
 
   try {
     await invoke("save_file", { path: filePath, data: Array.from(bytes) });
-    const { code, requirement } = report;
+    const { code, requirement, pending } = report;
+    const hasPending = !!(pending && pending.names && pending.names.length);
     alert(
       `已导出：${filePath}\n\n` +
         `视角一 · 代码文档：Source Code ${code.sourceTotal} 行中 Parent ID 为空 ${code.emptyParent} 行（${formatRatio(code.emptyRatio)}）\n` +
-        `视角二 · 低层需求：Requirement ${requirement.total} 条中未被引用 ${requirement.orphaned} 条（${formatRatio(requirement.orphanRatio)}）`
+        `视角二 · 低层需求：Requirement ${requirement.total} 条中未被引用 ${requirement.orphaned} 条（${formatRatio(requirement.orphanRatio)}）` +
+        // 未决单列：否则「为空/未被引用」会被当成数据缺陷，实则是同名函数归属判不出来
+        (hasPending
+          ? `\n\n⚠ 同名函数无法判定归属：${pending.names.join("、")}\n` +
+            `  受影响 ${pending.codeRows.length} 行 Parent ID、${pending.reqCount} 条需求，已留空且**不计入**上述遗漏与未被引用。`
+          : "")
     );
   } catch (err) {
     alert(`导出失败：${err}`);

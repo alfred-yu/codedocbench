@@ -215,6 +215,68 @@ eq("空报告渲染器累计调用", renderedSpecs.length, 8);
 const notesRow2 = cellText(byName2["校验汇总"], labelRow(byName2["校验汇总"], "列映射提示"), 2);
 ok("空报告列映射提示如实列出", notesRow2.includes("未映射「ID 列」") && notesRow2.includes("未映射「Object Type 列」"), notesRow2);
 
+/* ============ 第 6 节：未决同名函数的着色必须与真·遗漏/孤儿可区分 ============
+   真·问题用浅红 FFFFEBE9，未决用浅琥珀 FFFFF3CD —— 两者语义不同
+   （「没有需求」vs「归属填不出来」），颜色混同会让用户把工具局限误判成数据缺陷。 */
+console.log("[6/6] 未决同名函数：琥珀色着色与真问题区分");
+const fillArgb = (ws, r, c) => {
+  const f = ws.getCell(r, c).fill;
+  return f && f.pattern === "solid" && f.fgColor ? f.fgColor.argb : null;
+};
+{
+  const llr = [
+    { id: "", sec: "9.1.1.1", content: "Dup_Fn", type: "" },
+    { id: "R_OK", sec: "", content: "ok", type: "Requirement" },
+    { id: "", sec: "9.2.1.1", content: "Dup_Fn", type: "" },
+    { id: "R_PEND", sec: "", content: "pending", type: "Requirement" },
+    { id: "", sec: "9.2.1.2", content: "Solo", type: "" },
+    { id: "R_ORPH", sec: "", content: "orphan", type: "Requirement" },
+  ];
+  const rows = [
+    { num: "1", title: "Function Definition", objectType: "", parent: "" },
+    { num: "", title: "Dup_Fn", objectType: "Source Code", parent: "R_OK", sectionKey: "functions", sectionTitle: "F" },
+    { num: "", title: "Dup_Fn", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "F" },
+    { num: "", title: "Real_Gap", objectType: "Source Code", parent: "", sectionKey: "functions", sectionTitle: "F" },
+  ];
+  const pendReport = auditTrace({
+    rows,
+    llrRows: llr,
+    colMap: { id: "id", content: "content", type: "type", chapter: "sec" },
+    nameSet: new Set(["Dup_Fn", "Real_Gap"]),
+    unresolvedNames: new Set(["Dup_Fn"]),
+  });
+  const wbp = await encodeTraceWorkbook(pendReport, {}, stubRenderChart);
+  const wsMap = Object.fromEntries(wbp.worksheets.map((w) => [w.name, w]));
+  const cw = wsMap["代码侧-SourceCode明细"];
+  const rw = wsMap["需求侧-一致性明细"];
+
+  // 代码侧：第 2 行已关联（不着色）、第 3 行未决（琥珀）、第 4 行真遗漏（浅红）
+  eq("代码侧未决行写明原因", rowVals(cw, 3, 4)[3], "（同名函数无法判定归属）");
+  eq("代码侧真遗漏行 Parent ID 留空", rowVals(cw, 4, 4)[3], "");
+  eq("未决行第 1 列琥珀色", fillArgb(cw, 3, 1), "FFFFF3CD");
+  eq("未决行第 4 列琥珀色", fillArgb(cw, 3, 4), "FFFFF3CD");
+  eq("真遗漏行浅红（与未决不同色）", fillArgb(cw, 4, 1), "FFFFEBE9");
+  ok("已关联行不着色", [1, 2, 3, 4].every((c) => !fillArgb(cw, 2, c)));
+  ok("未决与真遗漏颜色确实不同", fillArgb(cw, 3, 1) !== fillArgb(cw, 4, 1));
+  ok("着色只到第 4 列", !fillArgb(cw, 3, 5));
+
+  // 需求侧：R_PEND 未决（琥珀）、R_ORPH 真孤儿（浅红）
+  eq("需求侧未决标记", rowVals(rw, 3, 5)[2], "（归属未决）");
+  eq("需求侧真孤儿标记", rowVals(rw, 4, 5)[2], "（未被引用）");
+  eq("需求侧未决行琥珀色", fillArgb(rw, 3, 1), "FFFFF3CD");
+  eq("需求侧真孤儿行浅红", fillArgb(rw, 4, 1), "FFFFEBE9");
+  ok("需求侧已引用行不着色", [1, 2, 3, 4, 5].every((c) => !fillArgb(rw, 2, c)));
+  ok("需求侧着色只到第 5 列", !fillArgb(rw, 3, 6));
+
+  // 汇总页：未决小节 + 列映射提示 + 结论都要出现
+  const sumWs = wsMap["校验汇总"];
+  const noteTxt = cellText(sumWs, labelRow(sumWs, "列映射提示"), 2);
+  ok("汇总列映射提示说明未决不计遗漏", noteTxt.includes("不计入遗漏") && noteTxt.includes("Dup_Fn"), noteTxt);
+  const concl = cellText(sumWs, labelRow(sumWs, "结论"), 2);
+  ok("结论含未决计数", concl.includes("同名未决 1 行 / 1 条需求"), concl);
+  eq("汇总页未决函数名行", cellText(sumWs, labelRow(sumWs, "未决函数名"), 2), "Dup_Fn");
+}
+
 console.log("");
 console.log(`断言通过 ${pass} 项，失败 ${fail.length} 项`);
 if (fail.length) {

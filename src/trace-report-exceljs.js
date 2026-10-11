@@ -37,31 +37,39 @@ export async function encodeTraceWorkbook(report, meta = {}, renderChart = rende
       }
     });
     if (name === "代码侧-SourceCode明细") {
-      // 空 Parent ID 行整行浅红着色（GitHub danger subtle 风），一眼定位缺口；占位行不着色
+      // 空 Parent ID 行整行浅红着色（GitHub danger subtle 风），一眼定位缺口；占位行不着色。
+      // 未决同名函数行用浅琥珀色：它的空值语义是「归属填不出来」而非「没有需求」，
+      // 必须与真·遗漏视觉可区分，否则用户会把工具局限误判成数据缺陷。
       aoa.forEach((row, r) => {
         if (r === 0) return;
         if (String(row[0] ?? "").startsWith("（无")) return;
-        if (String(row[3] ?? "").trim()) return;
+        const cell4 = String(row[3] ?? "").trim();
+        if (cell4 && cell4 !== "（同名函数无法判定归属）") return;
+        const pending = cell4 === "（同名函数无法判定归属）";
+        const argb = pending ? "FFFFF3CD" : "FFFFEBE9";
         for (let c = 0; c < Math.max(4, row.length); c++) {
           ws.getCell(r + 1, c + 1).fill = {
             type: "pattern",
             pattern: "solid",
-            fgColor: { argb: "FFFFEBE9" },
+            fgColor: { argb },
           };
         }
       });
     }
     if (name === "需求侧-一致性明细") {
-      // 未被引用的 Requirement 行整行浅红着色（与代码侧空值行同一视觉语言）；占位行不着色
+      // 未被引用的 Requirement 行整行浅红着色（与代码侧空值行同一视觉语言）；
+      // 归属未决的行用浅琥珀色区分；占位行不着色
       aoa.forEach((row, r) => {
         if (r === 0) return;
         if (String(row[0] ?? "").startsWith("（无")) return;
-        if (String(row[2] ?? "") !== "（未被引用）") return;
+        const mark = String(row[2] ?? "");
+        const argb = mark === "（归属未决）" ? "FFFFF3CD" : mark === "（未被引用）" ? "FFFFEBE9" : null;
+        if (!argb) return;
         for (let c = 0; c < Math.max(5, row.length); c++) {
           ws.getCell(r + 1, c + 1).fill = {
             type: "pattern",
             pattern: "solid",
-            fgColor: { argb: "FFFFEBE9" },
+            fgColor: { argb },
           };
         }
       });

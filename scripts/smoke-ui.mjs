@@ -881,6 +881,31 @@ console.log("[9/10] 同名函数消歧：跨文件同名函数必须关联到各
   globalThis.confirm = () => true;
   console.log(`  导出前确认拦截=${confirmHit}  取消后未写盘=${savedFiles.length === 0}`);
 
+  // 同名场景下再导出一致性报告：未决必须单列，不能混进「遗漏 / 未被引用」——
+  // 否则用户会把工具的局限误判成数据缺陷（这正是本次修复的另一半）
+  const reportAlertsBefore = alerts.length;
+  globalThis.confirm = () => true;
+  if (!clickBtn("gen-trace-btn")) fail.push("同名消歧：未找到「一致性校验」按钮");
+  else await settle(1500);
+  const reportAlert = alerts.slice(reportAlertsBefore).find((a) => a.includes("一致性检查报告"));
+  if (!reportAlert) {
+    fail.push("同名消歧：一致性报告未导出（无成功提示）");
+  } else {
+    const okPending = reportAlert.includes("同名函数无法判定归属") && reportAlert.includes("不计入");
+    if (!okPending)
+      fail.push("同名消歧：一致性报告摘要未提示未决同名函数，或未说明其不计入遗漏/未被引用");
+    // 摘要里的「为空 / 未被引用」数字不应包含未决的那 1 行 / 1 条
+    const m1 = /Parent ID 为空 (\d+) 行/.exec(reportAlert);
+    const m2 = /未被引用 (\d+) 条/.exec(reportAlert);
+    if (m1 && Number(m1[1]) !== 0)
+      fail.push(`同名消歧：未决行不应计入「Parent ID 为空」，实际 ${m1[1]}（应为 0）`);
+    if (m2 && Number(m2[1]) !== 0)
+      fail.push(`同名消歧：未决需求不应计入「未被引用」，实际 ${m2[1]}（应为 0）`);
+    console.log(
+      `  报告摘要提示未决=${okPending}  遗漏=${m1 ? m1[1] : "?"}  未引用=${m2 ? m2[1] : "?"}（均应排除未决）`
+    );
+  }
+
   // 还原默认场景，避免影响后续
   activePayload = PROJECT_PAYLOAD;
   activeLlrPath = LLR_PATH;
