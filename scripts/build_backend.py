@@ -50,6 +50,13 @@ subprocess.check_call(cmd)
 
 src_dir = os.path.join(tmp_dist, name)
 print(f"[build_backend] copying {src_dir} -> {FINAL_DIR}")
+# 先清空目标目录再复制：copytree(dirs_exist_ok=True) 只覆盖同名文件，
+# 旧产物里多出来的文件（如开发机环境被 PyInstaller 连带抓入的 numpy/PIL/lxml）
+# 会残留下来并被一并打进安装包 —— 实测让 MSI 从 11.5MB 涨到 30.3MB。
+# 只删本脚本自己的产物目录，不触发系统级批量删除拦截。
+if os.path.isdir(FINAL_DIR):
+    print(f"[build_backend] cleaning stale files in {FINAL_DIR}")
+    shutil.rmtree(FINAL_DIR)
 shutil.copytree(src_dir, FINAL_DIR, dirs_exist_ok=True)
 
 out_name = name + (".exe" if os.name == "nt" else "")
