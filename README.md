@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | 仓库 | <https://github.com/alfred-yu/codedocbench>（默认分支 `main`） |
-| 下载 | <https://github.com/alfred-yu/codedocbench/releases>（最新：[v0.1.2](https://github.com/alfred-yu/codedocbench/releases/tag/v0.1.2)） |
+| 下载 | <https://github.com/alfred-yu/codedocbench/releases>（最新：[v0.1.3](https://github.com/alfred-yu/codedocbench/releases/tag/v0.1.3)） |
 | 技术栈 | 原生 JS + Vite · Tauri 2 (Rust) · Python 3（纯标准库解析器） |
 | 许可 | [GPL-3.0](LICENSE) |
 
