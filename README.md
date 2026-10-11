@@ -127,6 +127,7 @@
 │   ├── cdp_verify_gen.mjs     # 真实浏览器验证：生成预览分页
 │   ├── cdp_verify_p2.mjs      # 真实浏览器验证：Worker 大文件不卡主线程
 │   ├── cdp_verify_invalid.mjs # 真实浏览器验证：链接失效提示的样式与可见性
+│   ├── cdp_verify_dup.mjs     # 真实浏览器验证：同名消歧告警块的样式与可见性
 │   ├── cdp_shot_step5.mjs     # 真实浏览器截取手册配图（docs/images/）
 │   ├── make_release.py        # 建 GitHub Release 并上传安装包（幂等）
 │   └── preview-charts.html    # 报告图表观感自检页（浏览器同步挂载 canvas）
@@ -188,7 +189,7 @@ msedge --headless=new --remote-debugging-port=9333 \
 node scripts/cdp_verify_invalid.mjs                          # 断言计算样式与可见性
 ```
 
-现有脚本：`cdp_verify_gen.mjs`（步骤 4 分页）、`cdp_verify_p2.mjs`（Worker 不冻结主线程）、`cdp_verify_invalid.mjs`（失效提示的浅红底/警示色/边框实打实生效）、`cdp_shot_step5.mjs`（截手册配图）。
+现有脚本：`cdp_verify_gen.mjs`（步骤 4 分页）、`cdp_verify_p2.mjs`（Worker 不冻结主线程）、`cdp_verify_invalid.mjs`（失效提示的浅红底/警示色/边框实打实生效）、`cdp_verify_dup.mjs`（同名消歧告警块的样式与可见性 + 对照防误报）、`cdp_shot_step5.mjs`（截手册配图）。
 
 ## 发布
 

@@ -9,7 +9,9 @@
   必须补 `npm run smoke`（构建 + 界面冒烟 + 分片/一致性校验回归）。
   **改动样式类时还必须补 CDP 真实浏览器验证**：DOM stub 只证明代码写进了 `innerHTML`，
   证明不了用户看得见（样式类写错、被更高优先级规则覆盖、容器裁切，stub 全都测不出来）。
-  脚本：`scripts/cdp_verify_{gen,p2,invalid}.mjs`。
+  脚本：`scripts/cdp_verify_{gen,p2,invalid,dup}.mjs`。
+  注意：CDP 只需验「DOM stub 测不到的那部分」（样式、可见性、分页等），
+  **行为逻辑仍应在纯模块回归 + 冒烟里覆盖**，别为了跑通 CDP 去硬凑五步流程。
   Python 解析器改动必须跑 `python -m pytest tests/`。
 - 提交前用 `git status` 确认 `dist/`、`src-tauri/target/`、`python/dist/` 等构建产物未被暂存（已在 `.gitignore`）。
 - 推送后复核：`git rev-list --count origin/main..HEAD` 必须为 0（远端偶发误报，不能只看 push 输出）；
