@@ -295,6 +295,14 @@ let activeLlrBytes = LLR_BYTES;
 
 const invoked = [];
 const savedFiles = [];
+/* 源码 mtime 与解析形态：第 11 组用来模拟「外部编辑器改了源码」。
+   mtime 变化 → ensureParsed 重解析 → 界面数据应随之更新。 */
+let srcMtime = 1;
+let srcParseMode = "base"; // "base" | "changed"
+/* 每次 parse_file 返回的函数个数 —— 第 11 组断言「产品确实按 mtime 重新取到了新数据」。
+   按路径记录：并发 16 路解析时，「最后一次调用」未必是关心的那个文件。 */
+const parseTails = [];
+const parseTailsByPath = new Map();
 const tauriInvoke = async (cmd, args) => {
   invoked.push(cmd);
   if (cmd === "plugin:dialog|save") {
@@ -315,21 +323,43 @@ const tauriInvoke = async (cmd, args) => {
     throw new Error("ENOENT: 文件不存在"); // 导出时的同名覆盖探测走这条
   }
   if (cmd === "parse_file") {
+    // 每次 parse_file 返回的函数个数 —— 第 11 组断言「产品确实按 mtime 重新取到了新数据」
+    const snap = (r) => {
+      const n = (r.functions || []).length;
+      parseTails.push(n);
+      parseTailsByPath.set(args.path, n);
+      return r;
+    };
     // 重名场景的两个 .c：big_dup.c 有一堆 fn_xxx 外加同名 static 的 dup_fn_001，
     // dup.c 也有一个 dup_fn_001 + 两个只有它才有的兄弟函数（消歧的关键依据）
     if (args.path === DUP_BIG_SOURCE_PATH) {
-      return {
+      return snap({
         functions: [...FUNCS, DECL_FN_001, DUP_SHARED_FN_BIG],
         structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1,
-      };
+      });
     }
     if (args.path === DUP_SOURCE_PATH) {
-      return { functions: DUP_FUNCS, structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
+      return snap({ functions: DUP_FUNCS, structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 });
     }
-    return { functions: [...FUNCS, DECL_FN_001], structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: 1 };
+    // big.c：第 11 组改srcParseMode 模拟源码被修改（新增函数 + 新增宏）
+    if (srcParseMode === "changed") {
+      return snap({
+        functions: [...FUNCS, DECL_FN_001, { name: "brand_new_fn", isDefinition: true }],
+        structs: [], enums: [], typedefs: [], globals: [],
+        macros: [{ name: "FRESHLY_ADDED_MACRO", value: "(1)", line: 1 }],
+        constants: [], mtime: srcMtime,
+      });
+    }
+    return snap({ functions: [...FUNCS, DECL_FN_001], structs: [], enums: [], typedefs: [], globals: [], macros: [], constants: [], mtime: srcMtime });
   }
-  // 两份 LLR 各自稳定的 mtime：内容不变即不会触发外部修改重读
-  if (cmd === "file_mtime") return args.path === DUP_LLR_PATH ? 2 : 1;
+  // 两份 LLR 各自稳定的 mtime：内容不变即不会触发外部修改重读。
+  // 源码 mtime 可变（srcMtime），用于第 11 组「源码改动后步骤 2 能刷新」——
+  // 改 mtime 并切换 srcParseMode，模拟用户在外部编辑器里改了源码。
+  if (cmd === "file_mtime") {
+    if (args.path === DUP_LLR_PATH) return 2;
+    if (args.path === DUP_SOURCE_PATH) return 3;
+    return srcMtime;
+  }
   if (cmd === "save_file") {
     savedFiles.push({ path: args.path, data: args.data });
     return null;
@@ -367,9 +397,9 @@ console.log("[smoke] 打包产物:", bundle);
 
 try {
   await import("file:///" + path.join(DIST, bundle).replace(/\\/g, "/"));
-  console.log("[1/10] 模块顶层执行完成");
+  console.log("[1/11] 模块顶层执行完成");
 } catch (e) {
-  console.log("[1/10] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
+  console.log("[1/11] 模块顶层执行失败 ❌", e.constructor.name + ": " + e.message);
   process.exit(1);
 }
 
@@ -400,12 +430,12 @@ const clickSelectorIn = (containerId, sel) => {
 // 触发「点击打开项目目录」：找绑定了 click 的容器
 const treeEl = [...registry.values()].find((el) => (el.__listeners.click || []).length);
 if (!treeEl) {
-  console.log("[2/10] 未找到打开项目的 click 监听 ❌");
+  console.log("[2/11] 未找到打开项目的 click 监听 ❌");
   process.exit(1);
 }
 for (const fn of treeEl.__listeners.click) fn({ target: { closest: () => ({}) } });
 await settle(400);
-console.log("[2/10] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
+console.log("[2/11] 打开项目链路 → 后端调用:", [...new Set(invoked)].join(", "));
 if (!invoked.includes("scan_dir")) fail.push("打开项目未触发 scan_dir");
 if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的源码文件");
 // P2 回归：LLR 恢复加载走 showRelLoading(true)→(false)，状态条提示必须在复位时清掉
@@ -413,7 +443,7 @@ if (!invoked.includes("parse_file")) fail.push("打开项目未解析挂载的�
 const statusText = () => String((registry.get("status") && registry.get("status").textContent) || "");
 if (statusText().includes("正在解析")) fail.push(`解析完成后状态条未复位：「${statusText()}」`);
 
-console.log("[3/10] 步骤 5 按钮接线 +「未生成不可导出」守卫");
+console.log("[3/11] 步骤 5 按钮接线 +「未生成不可导出」守卫");
 const genBound = clickBtn("link-gen-btn");
 const runBound = clickBtn("link-run-btn");
 await settle(80);
@@ -424,7 +454,7 @@ if (!runBound) fail.push("link-run-btn 未绑定 click");
 if (!alerts.some((a) => a.includes("请先点击「生成链接文件」"))) fail.push("导出按钮未走「未生成不可导出」守卫");
 if (xlsxWritten().length) fail.push("未生成时不应导出任何 Excel");
 
-console.log("[4/10] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
+console.log("[4/11] 生成链接文件 + 预览分页（120 个函数 → 3 页 / 3 个文件）");
 const wMark = writes.length;
 clickBtn("link-gen-btn");
 await settle(400);
@@ -479,7 +509,7 @@ console.log(`  上一页后: ${pageLabel(h2b)} 行数=${rowsIn(h2b)} 首行链�
 if (pageLabel(h2b) !== "2/3") fail.push("「上一页」未回到第 2 页：" + pageLabel(h2b));
 if (firstInId(h2b) !== "51") fail.push("返回第 2 页后首行链入 ID 应为 51，实际 " + firstInId(h2b));
 
-console.log("[5/10] 导出分片：校验真实写盘字节");
+console.log("[5/11] 导出分片：校验真实写盘字节");
 clickBtn("link-run-btn");
 await settle(600);
 // 注意：save_file 也用于写工程数据文件（.codedocbench.json），这里只看导出的 Excel
@@ -528,7 +558,7 @@ if (previewHtml.includes("DEMO_LL_R_")) fail.push("预览中的链入 ID 仍带�
 const summary = alerts.slice(-1)[0] || "";
 if (!summary.includes("3 个链接文件")) fail.push("导出汇总未说明切分结果：" + summary.slice(0, 120));
 
-console.log("[6/10] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
+console.log("[6/11] 一致性检查报告导出：按钮触发 → 另存为 → Excel 内容（步骤 4 主入口）");
 {
   // DOM stub 的 getElementById 永远返回对象，标记丢失不会暴露；故直接核对构建产物里的节点。
   // 结果已从对话框改为导出报告：对话框标记必须不存在，防止死节点回潮
@@ -601,7 +631,7 @@ console.log("[6/10] 一致性检查报告导出：按钮触发 → 另存为 →
   console.log("  报告已导出，摘要:", lastAlert.replace(/\n/g, " | ").slice(0, 170));
 }
 
-console.log("[7/10] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
+console.log("[7/11] 生成预览分页：进入步骤 4，断言只渲染当前页、翻页生效");
 {
   // 用户操作顺序点击 stepper 解锁步骤（maxStep 闸门），最终触发 renderGenPreview
   const stepFns = registry.get("stepper") && registry.get("stepper").__listeners.click;
@@ -653,7 +683,7 @@ console.log("[7/10] 生成预览分页：进入步骤 4，断言只渲染当前�
   }
 }
 
-console.log("[8/10] 链接失效：上游数据变更后已生成的链接必须失效（防静默导出过期数据）");
+console.log("[8/11] 链接失效：上游数据变更后已生成的链接必须失效（防静默导出过期数据）");
 {
   // 背景：步骤 5 的链接行依赖「文档目录树 + 源码解析结果 + 低层需求数据」三者。
   //      修复前这三条上游变更路径都不复位，用户看到的仍是上次的预览 + 可点的导出按钮，
@@ -760,7 +790,7 @@ console.log("[8/10] 链接失效：上游数据变更后已生成的链接必须
   console.log(`  重新生成后已恢复可导出态: ${isGenerated() && !runDisabled()}`);
 }
 
-console.log("[9/10] 同名函数消歧：跨文件同名函数必须关联到各自的需求（静态重名场景）");
+console.log("[9/11] 同名函数消歧：跨文件同名函数必须关联到各自的需求（静态重名场景）");
 {
   // 背景：真实项目里各模块都用 static 定义同名私有函数（都叫 A）。
   //      修复前以纯函数名为键建索引，同名函数只保留一份需求块 →
@@ -912,7 +942,83 @@ console.log("[9/10] 同名函数消歧：跨文件同名函数必须关联到各
   activeLlrBytes = LLR_BYTES;
 }
 
-console.log("[10/10] 错误文案 / 未处理异常");
+console.log("[10/11] 源码改动后步骤 2 能刷新（原本改源码完全看不到更新）");
+{
+  /* 背景（真实缺陷）：步骤 2 的数据行直接读 parseCache，而 refreshAllFileData
+     原先只在步骤 3/4/5 的操作里调用 —— 停留在步骤 2 时用外部编辑器改源码，
+     函数增删、宏变化在界面上完全看不到，必须切到别的步骤或重开项目才更新。
+
+     断言方式（踩过坑，故写明）：
+       renderDocTree 用 createElement + appendChild 逐节点构建，stub 里 innerHTML
+       只记录到清空值、抓不到子节点 → 不能断言 DOM；
+       生成预览行数要穿过步骤 3 闸门，场景切换后步骤 4 常处于禁用态 → 取不到值。
+     故断言**产品是否按mtime 重新拉取了数据**——桩记录每次 parse_file 的函数数，
+     mtime 变了必须多拉一次且拿到新符号；mtime 没变必须一次都不拉（走缓存）。 */
+  const distHtml = fs.readFileSync(path.join(ROOT, "dist", "index.html"), "utf8");
+  if (!distHtml.includes(`id="doc-refresh-btn"`)) fail.push("dist/index.html 缺少 #doc-refresh-btn");
+  if (!clickBtn("doc-refresh-btn")) fail.push("「刷新源码」按钮未绑定 click");
+
+  // 必须先切回默认场景：上一组结束时仍挂着重名场景（big_dup.c + dup.c），
+  // 而本组模拟的源码改动作用在默认场景的 big.c 上 —— 场景不对就只能测到 dup.c 的 3 个函数。
+  // 只换 payload 不够，目录树里挂的还是旧文件，得走「刷新项目」重新加载。
+  activePayload = PROJECT_PAYLOAD;
+  activeLlrPath = LLR_PATH;
+  activeLlrBytes = LLR_BYTES;
+  {
+    const panel = document.getElementById("tree-panel");
+    const ctxFns = panel.__listeners.contextmenu || [];
+    const cands = [];
+    createdHook = (el, tag) => {
+      if (tag === "div") cands.push(el);
+    };
+    try {
+      for (const fn of ctxFns) fn({ preventDefault() {}, clientX: 10, clientY: 10, target: {} });
+    } finally {
+      createdHook = null;
+    }
+    const item = cands.find((el) => el.className === "ctx-item");
+    if (!item) fail.push("源码刷新场景：未捕获到右键菜单项，无法切回默认场景");
+    else {
+      for (const fn of item.__listeners.click || []) fn({});
+      await settle(1800);
+    }
+  }
+
+  // 基线：刷新一次，让 big.c 的解析结果进缓存（mtime=1，121 项）。
+  // 注意不能取「最后一次 parse_file」——并发 16 路时最后一次可能是别的文件（本项目组有两个 .c），
+  // 故记录每条路径各自的函数数，按路径取。
+  clickBtn("doc-refresh-btn");
+  await settle(1800);
+  const baseFns = parseTailsByPath.get(SOURCE_PATH) || 0;
+  const baseCalls = parseTails.length;
+  console.log(`  基线：big.c 解析函数数=${baseFns}（累计 parse_file ${baseCalls} 次）`);
+
+  // 模拟用户在外部编辑器里改了源码：mtime 变化 + 解析结果多出一个新函数
+  srcParseMode = "changed";
+  srcMtime = 99;
+  clickBtn("doc-refresh-btn");
+  await settle(1800);
+  const afterFns = parseTailsByPath.get(SOURCE_PATH) || 0;
+  if (parseTails.length !== baseCalls + 1)
+    fail.push(`mtime 变化后点「刷新源码」应重新解析一次，实际 parse_file ${baseCalls} → ${parseTails.length} 次`);
+  if (afterFns !== baseFns + 1)
+    fail.push(`重新解析后应拿到新增的 brand_new_fn，big.c 函数数 ${baseFns} → ${afterFns}`);
+  console.log(`  改 mtime 后：big.c 函数数 ${baseFns} → ${afterFns}（应 +1）`);
+
+  // mtime 未变时必须走缓存、不重复解析（大项目性能底线）
+  clickBtn("doc-refresh-btn");
+  await settle(1200);
+  const idleCalls = parseTails.length;
+  if (idleCalls !== baseCalls + 1)
+    fail.push(`mtime 未变时仍重复解析（应走缓存），多调了 ${idleCalls - baseCalls - 1} 次 parse_file`);
+  console.log(`  mtime 未变时零重复解析=${idleCalls === baseCalls + 1}`);
+
+  srcParseMode = "base";
+  srcMtime = 1;
+  console.log("");
+}
+
+console.log("[11/11] 错误文案 / 未处理异常");
 const bad = writes.filter((w) => /失败|Error|not defined/.test(w.value));
 if (bad.length) fail.push("界面出现错误文案: " + JSON.stringify(bad));
 if (rejections.length) fail.push("未处理的 Promise 异常: " + rejections.join(" | "));

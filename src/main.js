@@ -127,6 +127,7 @@ const docMountBtn = document.getElementById("doc-mount-btn");
 const docClearBtn = document.getElementById("doc-clear-mount-btn");
 const docExpandBtn = document.getElementById("doc-expand-btn");
 const docCollapseBtn = document.getElementById("doc-collapse-btn");
+const docRefreshBtn = document.getElementById("doc-refresh-btn");
 const docFilterBar = document.getElementById("doc-filter-bar");
 const docFilterChips = document.getElementById("doc-filter-chips");
 let docFilterExt = ""; // 当前筛选的文件后缀（小写含点），空 = 显示全部
@@ -235,8 +236,10 @@ function goStep(n) {
   genPanel.classList.toggle("hidden", n !== 4);
   linkPanel.classList.toggle("hidden", n !== 5);
   if (n === 2) {
-    renderDocTree();
-    renderDocProjectTree();
+    // 进入步骤 2 即按 mtime 重解析已挂载文件：否则停留在本步时用外部编辑器改源码，
+    // 界面看不到任何更新（ensureParsed 只重解析 mtime 变了的文件，未变的走缓存）。
+    // silent=true 不弹状态提示 —— 进步骤是常规操作，不该抢状态栏。
+    refreshDocSourceData(true);
   }
   if (n === 4) renderGenPreview();
   if (n === 5) paintLinkTable();
@@ -261,6 +264,34 @@ docClearBtn.addEventListener("click", () => {
 });
 docExpandBtn.addEventListener("click", () => setAllDocCollapsed(false));
 docCollapseBtn.addEventListener("click", () => setAllDocCollapsed(true));
+
+/* 手动刷新已挂载的源码数据。
+   背景：数据行直接读 parseCache，而缓存原先只在步骤 3/4/5 的操作里才刷新，
+   停留在步骤 2 时用外部编辑器改源码，界面完全看不到更新。
+   refreshAllFileData 内的 ensureParsed 按 mtime 判断，只重新解析真正改过的文件，
+   未改动的走缓存，因此大项目下开销可控。 */
+let docRefreshBusy = false;
+async function refreshDocSourceData(silent) {
+  if (docRefreshBusy) return;
+  docRefreshBusy = true;
+  const label = docRefreshBtn.querySelector("span");
+  const oldText = label.textContent;
+  label.textContent = "刷新中…";
+  docRefreshBtn.disabled = true;
+  try {
+    // 清缓存会强制全量重解析；这里只做 mtime 比对，不清，保持增量语义
+    await refreshAllFileData();
+    // 数据子章节结构可能因文件增删符号而变化，需重建后再渲染
+    renderDocProjectTree();
+    renderDocTree();
+    if (!silent) setStatus("已按文件修改时间刷新已挂载的源码数据");
+  } finally {
+    label.textContent = oldText;
+    docRefreshBtn.disabled = false;
+    docRefreshBusy = false;
+  }
+}
+docRefreshBtn.addEventListener("click", () => refreshDocSourceData(false));
 
 /* 全部展开/折叠：仅影响有子节点的节点，状态随文档树持久化 */
 function setAllDocCollapsed(collapsed) {
