@@ -380,3 +380,66 @@ struct S { int f_arr[6]; char *f_ptr[2]; };
     # 函数参数里的数组写法保留
     fn = [f for f in r["functions"] if f["name"] == "fn_arr_param"]
     assert fn and "a[10]" in fn[0]["params"], fn
+
+
+# ---------------------------------------------------------------------------
+# 数组下标统一保留在 type 文本里（2026-10-13）
+#
+# 背景：此前 typedef 与全局变量的 type 会丢掉数组下标（ByteArray 只写
+#       'unsigned char'），而 struct 字段与函数参数保留（char name[32]），
+#       章内不一致。下标是类型的一部分，统一口径为各章一律保留。
+# ---------------------------------------------------------------------------
+def test_array_suffix_kept_in_type_text(tmp_path):
+    r = parse(tmp_path, """
+typedef unsigned char ByteArray[16];
+typedef int Matrix[3][4];
+typedef char *NameArr[8];
+typedef unsigned char RowBuf[4], Grid[2][8];
+typedef char Plain;
+int g_arr[10];
+int g_multi[2][3];
+char *g_ptr_arr[5];
+const char g_const_arr[8];
+int g_plain;
+""")
+    td = {t["name"]: t["type"] for t in r["typedefs"]}
+    gl = {t["name"]: t["type"] for t in r["globals"]}
+    cs = {t["name"]: t["type"] for t in r["constants"]}
+
+    # typedef：单维 / 多维 / 指针数组 / 多声明符的数组
+    assert td["ByteArray"] == "unsigned char[16]", td
+    assert td["Matrix"] == "int[3][4]", td
+    assert td["NameArr"] == "char*[8]", td
+    assert td["RowBuf"] == "unsigned char[4]", td
+    assert td["Grid"] == "unsigned char[2][8]", td
+    # 非数组类型不得被误加下标
+    assert td["Plain"] == "char", td
+
+    assert gl["g_arr"] == "int[10]", gl
+    assert gl["g_multi"] == "int[2][3]", gl
+    assert gl["g_ptr_arr"] == "char*[5]", gl
+    assert gl["g_plain"] == "int", gl
+    assert cs["g_const_arr"] == "const char[8]", cs
+
+
+def test_array_suffix_aligns_with_struct_and_params(tmp_path):
+    """各章口径一致：typedef / globals / struct 字段 / 函数参数都保留下标。"""
+    r = parse(tmp_path, """
+typedef unsigned char Buf[16];
+int g_arr[10];
+struct S { char name[32]; int ids[2][4]; };
+int fn(int a[10], char b[4], int c);
+""")
+    td = {t["name"]: t["type"] for t in r["typedefs"]}
+    gl = {t["name"]: t["type"] for t in r["globals"]}
+    flds = [f for s in r["structs"] for f in s["fields"]]
+    params = [f for f in r["functions"] if f["name"] == "fn"][0]["params"]
+
+    # 四处都应含下标文本，口径一致
+    assert "[16]" in td["Buf"], td
+    assert "[10]" in gl["g_arr"], gl
+    assert any("[32]" in f for f in flds), flds
+    assert any("[2][4]" in f for f in flds), flds
+    assert "a[10]" in params and "b[4]" in params, params
+    # 非数组参数不应被加下标
+    assert params.count("[") == 2, params

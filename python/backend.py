@@ -662,17 +662,46 @@ def _consume_typedef(tokens: list, i: int) -> tuple | None:
             continue  # 该段没有名字（如尾逗号），跳过
         name_tok = idents[-1]
         idx = next((p for p, t in enumerate(seg) if t is name_tok), 0)
+        # 声明符 = 名字前缀 + 名字 + 名字后缀（数组下标属于类型，见 _array_suffix）
         prefix = seg[:idx]
+        suffix = seg[idx + 1:]
         if base_type is None:
             # 首段去掉声明符自身的 '*'，得到可复用的基类型
             star = next((p for p, t in enumerate(prefix) if t[1] == "*"), len(prefix))
             base_type = prefix[:star]
         stars = [t for t in prefix if t[1] == "*"]
-        type_text = _join(base_type + stars) or "(anonymous)"
+        # 数组下标紧跟名字（int a[10] 的 [10]、int m[2][3] 的 [2][3]），
+        # 与 struct 字段、函数参数的既有口径保持一致：各章都保留，不在此丢弃
+        type_text = _join(base_type + stars + _array_suffix(suffix)) or "(anonymous)"
         infos.append({"name": name_tok[1], "type": type_text, "line": tokens[i][2]})
     if not infos:
         return None
     return infos, j
+
+
+def _array_suffix(tokens: list) -> list:
+    """取名字之后紧邻的数组下标 token（[N] / [M][K] / []）。
+
+    数组下标是类型的一部分（`char Buf[16]` 的类型是 `char[16]`），
+    与 struct 字段、函数参数的口径一致 —— 那两处都保留下标。
+    指针别名（`*P`）不在此列：它作用于名字之前而非名字之后，返回空。
+    """
+    res = []
+    i = 0
+    while i < len(tokens) and tokens[i][1] == "[":
+        depth = 0
+        start = i
+        while i < len(tokens):
+            if tokens[i][1] == "[":
+                depth += 1
+            elif tokens[i][1] == "]":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+        res.extend(tokens[start:i])
+    return res
 
 
 # -- 函数 ---------------------------------------------------------------------
@@ -912,17 +941,20 @@ def _consume_global(tokens: list, i: int) -> tuple | None:
                 idx = pos
                 break
         prefix = decl[:idx]
+        # 数组下标紧跟名字（int g[10] 的 [10]、int m[2][3] 的 [2][3]），
+        # 属类型的一部分，与 typedef / struct 字段 / 函数参数口径一致 —— 各章都保留
+        suffix = _array_suffix(decl[idx + 1:])
         if si == 0:
             # 基类型：截到声明符自己的 '*' 之前，供后续段复用
             star_idx = next(
                 (k for k, t in enumerate(prefix) if t[1] == "*"), len(prefix)
             )
             base_tokens = prefix[:star_idx]
-            type_text = _fmt_type(prefix) or _fmt_type(base_tokens) or "?"
+            type_text = _fmt_type(prefix + suffix) or _fmt_type(base_tokens) or "?"
         else:
-            # 后续段复用基类型，并附加自己的 '*' 限定符
+            # 后续段复用基类型，并附加自己的 '*' 限定符与数组下标
             stars = [t for t in prefix if t[1] == "*"]
-            type_text = _fmt_type(base_tokens + stars) or "?"
+            type_text = _fmt_type(base_tokens + stars + suffix) or "?"
         entry = {
             "name": name_tok[1],
             "type": type_text,
