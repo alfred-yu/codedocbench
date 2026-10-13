@@ -286,3 +286,97 @@ def test_samples_smoke_no_line_overflow():
                     "typedefs", "structs", "enums"):
             for it in r[cat]:
                 assert it["line"] <= r["lineCount"], f"{p}: {cat} {it['name']} 行号越界"
+
+
+# ---------------------------------------------------------------------------
+# 一条typedef 写多个别名（2026-10-13 补）
+#
+# 背景：typedef 的别名取「最后出现的标识符」，多声明符时前面的名字直接丢失，
+#       且后一个的 type 会把前一个声明符的文本当基类型吞进去。
+#       真实 C项目里「typedef struct {...} X, *XPtr;」很常见，属必须支持的写法。
+# ---------------------------------------------------------------------------
+def test_typedef_multiple_aliases_struct(tmp_path):
+    r = parse(tmp_path, """
+typedef struct {
+  unsigned short type;
+  unsigned char  payload[232];
+} TftpPacket, *TftpPacketPtr;
+""")
+    st = names(r["structs"])
+    # 两个别名都必须出现：修复前只出 TftpPacketPtr，TftpPacket 被吞掉
+    assert "TftpPacket" in st, f"匿名 typedef 的首个别名丢失：{st}"
+    assert "TftpPacketPtr" in st, f"指针别名丢失：{st}"
+    # 字段里的数组下标必须保留（与 struct 字段口径一致）
+    fields = [f for s in r["structs"] if s["name"] == "TftpPacket" for f in s["fields"]]
+    assert any("payload[232]" in f for f in fields), fields
+
+
+def test_typedef_multiple_aliases_array(tmp_path):
+    r = parse(tmp_path, """
+typedef unsigned short Word16, W16Arr[4];
+typedef unsigned char  Buf8[8];
+""")
+    td = names(r["typedefs"])
+    # 修复前只出 W16Arr，Word16 丢失且 W16Arr 的 type 被污染
+    assert "Word16" in td, f"多声明符 typedef 的首个别名丢失：{td}"
+    assert "W16Arr" in td, f"数组别名丢失：{td}"
+    assert "Buf8" in td, f"单声明符数组 typedef 不应受影响：{td}"
+    # type 不得把前一个声明符的文本吞进来
+    w = [t for t in r["typedefs"] if t["name"] == "Word16"][0]
+    assert w["type"] == "unsigned short", w["type"]
+
+
+def test_typedef_tagged_with_alias(tmp_path):
+    """带 tag 的 typedef：tag 是记录本身，末尾别名是另一个类型名（归typedef 章）。
+
+    注：`typedef struct Tag {...} Tag;` 里 tag 与别名同名视为同一类型，不重复登记；
+    但 `typedef enum Color {...} ColorAlias;` 的 ColorAlias 与 tag 不同名，
+    是独立类型名，应出现在 typedef 章。
+    """
+    r = parse(tmp_path, """
+typedef struct TagNode { int v; } TagNode, *TagNodePtr;
+typedef union { int i; float f; } NumU;
+typedef enum Color { C_RED } ColorAlias;
+typedef struct Same { int w; } Same;
+""")
+    # tag 自身是记录，归struct 章（`typedef struct Same {...} Same;` 只登记一次，不重复）
+    assert names(r["structs"]) == ["TagNode", "NumU", "Same"], names(r["structs"])
+    assert names(r["enums"]) == ["Color"], names(r["enums"])
+    # 与 tag 同名的别名不算独立类型，不进 typedef 章
+    assert "Same" not in names(r["typedefs"]), names(r["typedefs"])
+    # 不同名的别名（指针别名、枚举别名）是独立类型名，归 typedef 章
+    td = names(r["typedefs"])
+    assert "TagNodePtr" in td, td
+    assert "ColorAlias" in td, td
+
+
+def test_array_names_and_types(tmp_path):
+    """数组的「名称」识别（确认下标不冒充变量名）与各章表现。"""
+    r = parse(tmp_path, """
+typedef unsigned char ByteArray[16];
+typedef int Matrix[3][4];
+typedef char *NameArr[8];
+int g_arr[10];
+int g_multi[2][3];
+char *g_ptr_arr[5];
+const char g_const_arr[8] = {0};
+int fn_arr_param(int a[10], char b[4]);
+struct S { int f_arr[6]; char *f_ptr[2]; };
+""")
+    td = names(r["typedefs"])
+    for want in ("ByteArray", "Matrix", "NameArr"):
+        assert want in td, f"数组 typedef 名识别错误：{td}"
+    gl = names(r["globals"])
+    for want in ("g_arr", "g_multi", "g_ptr_arr"):
+        assert want in gl, f"数组全局变量名识别错误：{gl}"
+    assert "g_const_arr" in names(r["constants"])
+    # 关键：下标里的数字不得被当成名字（10 / 3 / 4 / 5都不该出现在变量名里）
+    for bogus in ("10", "3", "4", "5", "6", "8"):
+        assert bogus not in gl, f"数组下标被误当变量名：{bogus} in {gl}"
+    # struct 字段里的数组下标保留
+    flds = [f for s in r["structs"] for f in s["fields"]]
+    assert any("f_arr[6]" in f for f in flds), flds
+    assert any("f_ptr[2]" in f for f in flds), flds
+    # 函数参数里的数组写法保留
+    fn = [f for f in r["functions"] if f["name"] == "fn_arr_param"]
+    assert fn and "a[10]" in fn[0]["params"], fn

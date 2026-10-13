@@ -381,15 +381,39 @@ def _scan_top_level(tokens: list, result: dict) -> None:
             rec = _consume_record(tokens, i)
             if rec:
                 rkind, info, j = rec
-                result[rkind].append(info)
+                # info 为 list 表示多别名场景（typedef struct {...} A, *B;），逐个登记
+                if isinstance(info, list):
+                    for ikind, iinfo in info:
+                        result[ikind].append(iinfo)
+                else:
+                    result[rkind].append(info)
                 i = j
                 continue
         elif val == "typedef":
-            # 简单 typedef：typedef <type...> alias;
+            # typedef 后面若紧跟 struct/union/enum + '{'，本质是记录定义：
+            # `typedef struct Tag {...} A, *B;` 由 _consume_record 处理（能正确登记
+            # tag 与多个别名）。此处不能直接走 _consume_typedef —— 它取「最后一个标识符」
+            # 当别名，会把 tag 名错当别名、且丢掉其余名字与字段信息。
+            nxt = tokens[i + 1][1] if i + 1 < n else None
+            if nxt in ("struct", "union", "enum"):
+                rec = _consume_record(tokens, i + 1)
+                if rec:
+                    rkind, info, j = rec
+                    if isinstance(info, list):
+                        for ikind, iinfo in info:
+                            result[ikind].append(iinfo)
+                    else:
+                        result[rkind].append(info)
+                    i = j
+                    continue
+            # 简单 typedef：typedef <type...> alias;  （可能多声明符，返回列表）
             td = _consume_typedef(tokens, i)
             if td:
                 info, j = td
-                result["typedefs"].append(info)
+                if isinstance(info, list):
+                    result["typedefs"].extend(info)
+                else:
+                    result["typedefs"].append(info)
                 i = j
                 continue
         elif val == "{":
@@ -444,6 +468,11 @@ def _match_brace(tokens: list, start: int) -> int:
 
 
 def _consume_record(tokens: list, i: int) -> tuple | None:
+    """消费 `struct/union/enum <tag>? { ... } <aliases>;`。
+
+    返回 (target, info, k)：info 可能被替换为 aliases 列表（多别名场景），
+    以便 `_scan_top_level` 一次登记全部类型名。
+    """
     keyword = tokens[i][1]              # struct / union / enum
     kind_map = {"struct": "structs", "union": "structs", "enum": "enums"}
     target = kind_map[keyword]
@@ -464,34 +493,81 @@ def _consume_record(tokens: list, i: int) -> tuple | None:
     # 提取成员/枚举值：取开括号后到闭括号之前的 token
     inner = tokens[open_idx + 1: end]
     line = tokens[i][2]
-    # 闭括号后可选别名 + 分号：`typedef struct {...} Alias;` 或 `struct Foo {...} var;`
-    alias = None
-    k = end + 1
+
+    # 闭括号后的 token 直到分号：`typedef struct {...} A, *B;` / `struct Foo {...} var;`
     trailing = []
+    k = end + 1
     while k < len(tokens) and tokens[k][1] != ";":
         if tokens[k][1] in ("{", "}"):
             break
-        if tokens[k][0] == "ident" and tokens[k][1] not in _TYPE_KEYWORDS:
-            trailing.append(tokens[k][1])
+        trailing.append(tokens[k])
         k += 1
-    # 取闭括号后的最后一个标识符作为别名（覆盖匿名 typedef 别名场景）
-    if trailing:
-        alias = trailing[-1]
     if k < len(tokens) and tokens[k][1] == ";":
         k += 1
 
-    if target == "enums":
-        members = [t[1] for t in inner if t[0] == "ident"]
-        info = {"name": name or alias or "(anonymous)", "members": members, "line": line}
-    else:
-        fields = _extract_fields(inner)
-        info = {
-            "name": name or alias or "(anonymous)",
+    # 闭括号后可跟多个别名（逗号分隔），如 `typedef struct {...} TftpPacket, *TftpPacketPtr;`
+    aliases = _split_aliases(trailing)
+    tag_text = (name or "(anonymous)")
+    member_names = (
+        [t[1] for t in inner if t[0] == "ident"] if target == "enums" else None
+    )
+    fields = _extract_fields(inner) if target != "enums" else None
+
+    def make(entry_name):
+        if target == "enums":
+            return {"name": entry_name, "members": member_names, "line": line}
+        return {
+            "name": entry_name,
             "kind": keyword,
             "fields": fields,
             "line": line,
         }
-    return target, info, k
+
+    # 别名与 tag 同名（typedef struct Tag Tag;）时视为同一类型，不重复登记
+    distinct = [a for a in aliases if a != name]
+    if not distinct:
+        # 注意括号：三元表达式优先级高于 or，写成 name or a if a else b 会让 name 被吞
+        return target, make(name or (aliases[0] if aliases else "(anonymous)")), k
+
+    # 有 tag 时：tag 自身就是记录名，别名是另外的类型名 → 两者都登记
+    #（tag 归record 章，别名归 typedef 章；匿名时全部别名都归 record 章，
+    #  保持「匿名 typedef 的别名出现在 struct 章」的既有口径）
+    infos = []
+    if name:
+        infos.append((target, make(name)))
+        for a in distinct:
+            # `typedef struct Tag Alias;` —— 别名是新类型名，记为 typedef
+            infos.append(("typedefs", {"name": a, "type": f"{keyword} {tag_text}", "line": line}))
+    else:
+        for a in distinct:
+            infos.append((target, make(a)))
+    return target, infos, k
+
+
+def _split_aliases(trailing: list) -> list:
+    """把 `A, *B, C[4]` 这样的闭括号后声明符拆成别名列表。
+
+    指针/数组等修饰符只作用于其后的名字，名字本身是最后一个非类型标识符。
+    """
+    names = []
+    cur = []
+    depth = 0
+    segs = [[]]
+    for t in trailing:
+        v = t[1]
+        if v in ("(", "[", "{"):
+            depth += 1
+        elif v in (")", "]", "}"):
+            depth -= 1
+        if v == "," and depth == 0:
+            segs.append([])
+            continue
+        segs[-1].append(t)
+    for seg in segs:
+        idents = [t for t in seg if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
+        if idents:
+            names.append(idents[-1][1])
+    return names
 
 
 def _extract_fields(inner: list) -> list:
@@ -555,21 +631,48 @@ def _consume_typedef(tokens: list, i: int) -> tuple | None:
         j += 1
     if not buf:
         return None
-    # 别名 = 最后出现的标识符（且在闭合括号之外）
-    # 场景：typedef Foo Bar; / typedef struct {...} Bar; 已在 record 处理
-    alias = None
-    alias_idx = -1
-    for idx in range(len(buf) - 1, -1, -1):
-        if buf[idx][0] == "ident" and buf[idx][1] not in _TYPE_KEYWORDS:
-            alias = buf[idx][1]
-            alias_idx = idx
-            break
-    if not alias:
-        return None
-    type_text = _join(buf[:alias_idx]) or "(anonymous)"
     if j < len(tokens) and tokens[j][1] == ";":
         j += 1
-    return {"name": alias, "type": type_text, "line": tokens[i][2]}, j
+
+    # 一条typedef 可写多个声明符：`typedef unsigned short Word16, W16Arr[4];`
+    # 修复前别名取「最后出现的标识符」，前面的名字直接丢失，
+    # 且最后那个的 type 会把前面声明符的文本当成基类型吞进去。
+    # 现按顶层逗号分段：首段出基类型，后续段复用它，名字取各段最后一个标识符。
+    segments = []
+    cur = []
+    depth = 0
+    for t in buf:
+        v = t[1]
+        if v in ("(", "[", "{"):
+            depth += 1
+        elif v in (")", "]", "}"):
+            depth -= 1
+        if v == "," and depth == 0:
+            segments.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    segments.append(cur)
+
+    infos = []
+    base_type = None
+    for seg in segments:
+        idents = [t for t in seg if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
+        if not idents:
+            continue  # 该段没有名字（如尾逗号），跳过
+        name_tok = idents[-1]
+        idx = next((p for p, t in enumerate(seg) if t is name_tok), 0)
+        prefix = seg[:idx]
+        if base_type is None:
+            # 首段去掉声明符自身的 '*'，得到可复用的基类型
+            star = next((p for p, t in enumerate(prefix) if t[1] == "*"), len(prefix))
+            base_type = prefix[:star]
+        stars = [t for t in prefix if t[1] == "*"]
+        type_text = _join(base_type + stars) or "(anonymous)"
+        infos.append({"name": name_tok[1], "type": type_text, "line": tokens[i][2]})
+    if not infos:
+        return None
+    return infos, j
 
 
 # -- 函数 ---------------------------------------------------------------------
