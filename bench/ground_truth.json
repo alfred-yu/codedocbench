@@ -1,0 +1,27 @@
+{
+  "_comment": "CodeDocBench 解析准确率基准真值。core = 工具设计口径内应识别的构造；boundary = 探测覆盖边界（README 声明不做完整文法/预处理）。函数以去重后的名称集合计。",
+  "core": {
+    "bench/corpus_core.c": {
+      "includes": ["stdio.h", "stdint.h", "sys/stat.h", "config.h"],
+      "macros": ["BUF_SIZE", "STR_HELLO", "MIN", "EMPTY_MACRO", "MULTI_LINE", "FLAG_ON"],
+      "constants": ["MAX_LEVEL", "PI", "GREETING", "DEVICE", "CAP", "C_A", "C_B"],
+      "typedefs": ["uint32_t", "pint", "Node_t", "handler_t", "IntArray"],
+      "functions": ["add", "internal", "get_name", "log_msg", "alloc", "on_event", "api_call"],
+      "structs": ["Point", "Rect", "U", "Range", "RangePtr"],
+      "enums": ["Color", "State", "EnumTag"],
+      "globals": ["g_counter", "g_hidden", "g_ptr", "g_arr", "g_extern", "g_a", "g_b", "g_c", "g_status", "g_init", "g_origin", "g_color"]
+    }
+  },
+  "boundary": {
+    "bench/corpus_boundary.c": {
+      "includes": [],
+      "macros": [],
+      "constants": ["AE_A", "AE_B"],
+      "typedefs": ["ops"],
+      "functions": ["signal", "legacy", "fatal", "fast", "cpp_func"],
+      "structs": ["Outer", "Flags", "Cb"],
+      "enums": [],
+      "globals": ["g_anon", "g_aenum"]
+    }
+  }
+}

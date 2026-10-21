@@ -443,3 +443,83 @@ int fn(int a[10], char b[4], int c);
     assert "a[10]" in params and "b[4]" in params, params
     # 非数组参数不应被加下标
     assert params.count("[") == 2, params
+
+
+# ---------------------------------------------------------------------------
+# 缺陷修复回归：typedef 别名名命中类型关键字被整条丢弃（2026-10-21）
+#
+# 背景：别名名恰好是固定宽度整数类型（uint32_t 等）、size_t/bool/wchar_t 时，
+#       原实现用「标识符且非类型关键字」过滤声明符名，会把别名本身过滤掉，
+#       导致整条 typedef 既不入 typedefs 也不降级进 globals（彻底丢失）。
+#       航空/嵌入式 C 里为兼容 <stdint.h> 缺失而自 typedef 这些名字是常态。
+# ---------------------------------------------------------------------------
+def test_typedef_alias_is_type_keyword(tmp_path):
+    r = parse(tmp_path, """
+typedef unsigned int uint32_t;
+typedef unsigned char uint8_t;
+typedef unsigned long size_t;
+typedef int bool;
+""")
+    td = names(r["typedefs"])
+    for want in ("uint32_t", "uint8_t", "size_t", "bool"):
+        assert want in td, f"typedef 别名名命中类型关键字被整条丢弃：{td}"
+
+
+def test_typedef_function_pointer_alias_keyword(tmp_path):
+    # 函数指针 typedef 的别名名命中类型关键字也不应丢（如 handler_t 合法，
+    # 但形参类型写成 uint32_t 时整条不能塌成 uint32_t）
+    r = parse(tmp_path, "typedef void (*handler_t)(uint32_t);\n")
+    assert "handler_t" in names(r["typedefs"]), names(r["typedefs"])
+
+
+# ---------------------------------------------------------------------------
+# 缺陷修复回归：匿名 union/enum 实例误归 record 章（2026-10-21）
+#
+# 背景：union {...} g; / enum {...} e; 是「带匿名类型的变量声明」，
+#       变量 g/e 必须归 globals 章，而非 structs/enums 章；匿名枚举还会
+#       引入文件级枚举常量，应登记到 constants 章。
+# ---------------------------------------------------------------------------
+def test_anonymous_union_enum_variables_are_globals(tmp_path):
+    r = parse(tmp_path, """
+union { int anon_i; double anon_d; } g_anon;
+enum { AE_A, AE_B } g_aenum;
+""")
+    g = names(r["globals"])
+    assert "g_anon" in g, f"匿名 union 实例未归全局变量：{g}"
+    assert "g_aenum" in g, f"匿名 enum 实例未归全局变量：{g}"
+    assert "g_anon" not in names(r["structs"]), "匿名 union 实例误归 structs 章"
+    assert "g_aenum" not in names(r["enums"]), "匿名 enum 实例误归 enums 章"
+    # 匿名枚举的枚举常量应登记到常量章
+    cs = names(r["constants"])
+    assert "AE_A" in cs and "AE_B" in cs, f"匿名枚举常量丢失：{cs}"
+
+
+# ---------------------------------------------------------------------------
+# 缺陷修复回归：K&R 老式定义产生垃圾全局 + 漏识函数（2026-10-21）
+#
+# 背景：int f(a, b) int a; int b; {...} 原实现把 a/b/int 抽成假全局、
+#       且函数 f 本身未被识别。修复后 f 应识别为函数，形参不得泄漏为全局。
+# ---------------------------------------------------------------------------
+def test_kr_function_definition(tmp_path):
+    r = parse(tmp_path, "int legacy(a, b) int a; int b; { return a + b; }\n")
+    fn = {f["name"]: f for f in r["functions"]}
+    assert "legacy" in fn, f"K&R 函数未被识别：{names(r['functions'])}"
+    assert fn["legacy"]["isDefinition"] is True
+    assert fn["legacy"]["params"] == "a, b", fn["legacy"]["params"]
+    g = names(r["globals"])
+    for junk in ("int", "a", "b"):
+        assert junk not in g, f"K&R 形参泄漏为垃圾全局：{g}"
+
+
+# ---------------------------------------------------------------------------
+# 缺陷修复回归：函数返回函数指针不被误当 fnptr 全局变量（2026-10-21）
+#
+# 背景：void (*signal(int sig, void (*h)(int)))(int); 是「函数声明」而非
+#       「函数指针变量声明」，原实现会把形参类型名 'int' 错登记为全局变量。
+#       属已知局限（不识别为函数），但不得产出垃圾全局变量。
+# ---------------------------------------------------------------------------
+def test_fn_returns_fnptr_not_junk_global(tmp_path):
+    r = parse(tmp_path, "void (*signal(int sig, void (*h)(int)))(int);\n")
+    g = names(r["globals"])
+    assert "int" not in g, f"函数返回函数指针被误登记为 fnptr 全局变量：{g}"
+    assert "signal" not in g, f"signal 被误登记为全局变量：{g}"

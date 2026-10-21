@@ -378,7 +378,7 @@ def _scan_top_level(tokens: list, result: dict) -> None:
             i += 1
             continue
         if val in ("struct", "union", "enum"):
-            rec = _consume_record(tokens, i)
+            rec = _consume_record(tokens, i, is_typedef=False)
             if rec:
                 rkind, info, j = rec
                 # info 为 list 表示多别名场景（typedef struct {...} A, *B;），逐个登记
@@ -396,7 +396,7 @@ def _scan_top_level(tokens: list, result: dict) -> None:
             # 当别名，会把 tag 名错当别名、且丢掉其余名字与字段信息。
             nxt = tokens[i + 1][1] if i + 1 < n else None
             if nxt in ("struct", "union", "enum"):
-                rec = _consume_record(tokens, i + 1)
+                rec = _consume_record(tokens, i + 1, is_typedef=True)
                 if rec:
                     rkind, info, j = rec
                     if isinstance(info, list):
@@ -467,8 +467,14 @@ def _match_brace(tokens: list, start: int) -> int:
     return -1
 
 
-def _consume_record(tokens: list, i: int) -> tuple | None:
+def _consume_record(tokens: list, i: int, is_typedef: bool = False) -> tuple | None:
     """消费 `struct/union/enum <tag>? { ... } <aliases>;`。
+
+    is_typedef: 该记录是否处于 `typedef` 前缀上下文（由调用方在
+    `typedef struct/union/enum {...} Alias;` 时置 True）。
+    匿名记录（无 tag）的闭括号后别名，在 typedef 上下文是类型别名（归
+    record 章，既有设计口径），在非 typedef 上下文则是变量声明
+    （如 `union {...} g;` / `enum {...} e;`，应归 globals 章）。
 
     返回 (target, info, k)：info 可能被替换为 aliases 列表（多别名场景），
     以便 `_scan_top_level` 一次登记全部类型名。
@@ -530,8 +536,7 @@ def _consume_record(tokens: list, i: int) -> tuple | None:
         return target, make(name or (aliases[0] if aliases else "(anonymous)")), k
 
     # 有 tag 时：tag 自身就是记录名，别名是另外的类型名 → 两者都登记
-    #（tag 归record 章，别名归 typedef 章；匿名时全部别名都归 record 章，
-    #  保持「匿名 typedef 的别名出现在 struct 章」的既有口径）
+    #（tag 归 record 章，别名归 typedef 章）
     infos = []
     if name:
         infos.append((target, make(name)))
@@ -539,8 +544,19 @@ def _consume_record(tokens: list, i: int) -> tuple | None:
             # `typedef struct Tag Alias;` —— 别名是新类型名，记为 typedef
             infos.append(("typedefs", {"name": a, "type": f"{keyword} {tag_text}", "line": line}))
     else:
-        for a in distinct:
-            infos.append((target, make(a)))
+        if is_typedef:
+            # 匿名 typedef（如 typedef struct {...} T;）：别名是类型名，按既有口径
+            # 归 record 章（设计选择，确认未丢）
+            for a in distinct:
+                infos.append((target, make(a)))
+        else:
+            # 匿名 record 变量声明（如 union {...} g; / enum {...} e;）：
+            # 别名是全局变量，归 globals 章。匿名枚举还会同时引入文件级枚举常量
+            for a in distinct:
+                infos.append(("globals", {"name": a, "type": keyword, "line": line}))
+            if target == "enums" and member_names:
+                for m in member_names:
+                    infos.append(("constants", {"name": m, "type": "enum", "line": line}))
     return target, infos, k
 
 
@@ -564,9 +580,13 @@ def _split_aliases(trailing: list) -> list:
             continue
         segs[-1].append(t)
     for seg in segs:
-        idents = [t for t in seg if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
-        if idents:
-            names.append(idents[-1][1])
+        seg_idents = [t for t in seg if t[0] == "ident"]
+        nonkw = [t for t in seg_idents if t[1] not in _TYPE_KEYWORDS]
+        if nonkw or seg_idents:
+            # 别名名恰好是类型关键字（如 typedef struct Foo uint32_t;）时，
+            # 退化为「取最后一个标识符」，避免别名被整条丢弃
+            name = (nonkw[-1] if nonkw else seg_idents[-1])[1]
+            names.append(name)
     return names
 
 
@@ -657,10 +677,17 @@ def _consume_typedef(tokens: list, i: int) -> tuple | None:
     infos = []
     base_type = None
     for seg in segments:
-        idents = [t for t in seg if t[0] == "ident" and t[1] not in _TYPE_KEYWORDS]
-        if not idents:
+        seg_idents = [t for t in seg if t[0] == "ident"]
+        nonkw = [t for t in seg_idents if t[1] not in _TYPE_KEYWORDS]
+        if nonkw:
+            name_tok = nonkw[-1]
+        elif seg_idents:
+            # 整段都是类型关键字（如 typedef unsigned int uint32_t;）：
+            # 别名名恰好就是类型关键字，取最后一个标识符作别名，
+            # 避免「整条 typedef 既不入 typedefs 也不入 globals」的静默丢失。
+            name_tok = seg_idents[-1]
+        else:
             continue  # 该段没有名字（如尾逗号），跳过
-        name_tok = idents[-1]
         idx = next((p for p, t in enumerate(seg) if t is name_tok), 0)
         # 声明符 = 名字前缀 + 名字 + 名字后缀（数组下标属于类型，见 _array_suffix）
         prefix = seg[:idx]
@@ -764,7 +791,43 @@ def _consume_function(tokens: list, i: int) -> tuple | None:
         is_def = False
         j += 1
     else:
-        return None
+        # K&R 老式定义：int f(a, b) int a; int b; { ... }
+        # 仅当 ')' 后紧跟类型关键字（显式形参类型声明）时才视作 K&R 形参声明序列，
+        # 顺带把形参声明整体消费掉，避免抽出垃圾全局变量、漏掉函数本身。
+        # 紧跟 '('（函数返回函数指针 void f()(int);）或属性(__attribute__)等
+        # 一律不进入此分支，交回原逻辑（不识别、不报错、不污染其它语句）。
+        if j < n and tokens[j][1] in _TYPE_KEYWORDS:
+            k = j
+            section = []
+            while k < n and tokens[k][1] != "{":
+                section.append(tokens[k])
+                k += 1
+            if k < n and tokens[k][1] == "{" and section:
+                names = []
+                cur = []
+                d = 0
+                for t in section:
+                    v = t[1]
+                    if v in ("(", "[", "{"):
+                        d += 1
+                    elif v in (")", "]", "}"):
+                        d -= 1
+                    if v == ";" and d == 0:
+                        idents = [x for x in cur
+                                  if x[0] == "ident" and x[1] not in _TYPE_KEYWORDS]
+                        if idents:
+                            names.append(idents[-1][1])
+                        cur = []
+                    else:
+                        cur.append(t)
+                params = ", ".join(names) if names else "(void)"
+                is_def = True
+                k2 = _match_brace(tokens, k)
+                j = k2 + 1 if k2 > 0 else k + 1
+            else:
+                return None
+        else:
+            return None
 
     return (
         {
@@ -852,6 +915,11 @@ def _consume_fnptr(tokens: list, i: int) -> tuple | None:
     if open_idx < 0 or close_idx < 0:
         return None
     inner = seg[open_idx + 1: close_idx]
+    # 内部若含嵌套 '('（如 void (*signal(int))(int);），说明这是「函数声明」
+    # 而非「函数指针变量声明」，不应当作 fnptr 全局变量（否则会错把形参类型
+    # 名当成变量名，如把 'int' 误登记为全局变量）。
+    if any(t[1] == "(" for t in inner):
+        return None
     idents = [t for t in inner if t[0] == "ident"]
     if not idents:
         return None
