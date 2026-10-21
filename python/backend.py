@@ -966,6 +966,13 @@ def _consume_global(tokens: list, i: int) -> tuple | None:
     if not buf or j >= n or tokens[j][1] != ";":
         return None
 
+    # 纯外部声明（extern 且无初始化）引用其它翻译单元的符号，不计入本文件章节；
+    # 带初始化的 `extern T x = ...;` 是定义，仍计入（避免误删本文件的真实定义）。
+    # 注意：必须整条语句跳过（返回消耗到的下标），不能 return None —— 否则
+    # _scan_top_level 只会跳过一个 token，把剩余 `int x;` 当新全局声明重新收录。
+    if any(t[1] == "extern" for t in buf) and not has_init:
+        return [], [], j + 1
+
     # 按顶层逗号拆分声明符段（忽略初始化列表/函数实参里的逗号）
     segments = []
     cur = []

@@ -194,7 +194,6 @@ def test_const_globals_routed_to_constants(tmp_path):
 static const double PI = 3.14;
 const char *msg = "hi";
 char *const fixed = 0;
-extern const long LIMIT;
 const int a = 1, b = 2;
 int c, *const p = 0;
 int plain_var;
@@ -206,8 +205,31 @@ void (*cb2)(int);
     g = set(names(r["globals"]))
     # 基类型 const（MAX_LEVEL/PI/a/b）、指针 const（msg/fixed/p/cb）均归常量；
     # 同语句的非 const 声明符（c）与普通变量（plain_var/counter/cb2）留在全局变量章
-    assert c == {"MAX_LEVEL", "PI", "msg", "fixed", "LIMIT", "a", "b", "p", "cb"}
+    assert c == {"MAX_LEVEL", "PI", "msg", "fixed", "a", "b", "p", "cb"}
     assert g == {"c", "plain_var", "counter", "cb2"}
+
+
+def test_extern_declarations_excluded_from_globals(tmp_path):
+    r = parse(tmp_path, """extern int g_ext;
+extern const long CAP;
+extern int a, b;
+extern int with_init = 5;
+extern const long cap2 = 3;
+int real_global;
+const int real_const = 9;
+""")
+    c = set(names(r["constants"]))
+    g = set(names(r["globals"]))
+    # 纯外部声明（extern 无初始化）不计入本文件章节
+    assert "g_ext" not in g
+    assert "CAP" not in c
+    assert "a" not in g and "b" not in g
+    # 带初始化的 extern 是定义，仍计入（避免误删本文件的真实定义）
+    assert "with_init" in g
+    assert "cap2" in c
+    # 本文件真实定义不受影响
+    assert "real_global" in g
+    assert "real_const" in c
 
 
 # ---------------------------------------------------------------------------
